@@ -448,21 +448,8 @@ export class AiManager {
       }
 
       const state: AttemptState = { toolsExecuted: false }
-
       try {
-        const driver = await this.use(providerName)
-        const result = await this.circuitBreaker.execute(
-          breakerKey,
-          () =>
-            operation({
-              getModel: () => driver.getModel(modelName),
-              modelName,
-              providerName,
-              breakerKey,
-              state,
-            }),
-          (err) => classifyError(err, request.abortSignal).countsAsFailure
-        )
+        const result = await this.attemptProvider(request, providerName, modelName, breakerKey, state, operation)
         return { result, provider: providerName, model: modelName }
       } catch (err) {
         const classification = classifyError(err, request.abortSignal)
@@ -477,6 +464,30 @@ export class AiManager {
     }
 
     throw new CascadingFallbackError(attempts)
+  }
+
+  /** One provider's attempt, run through its circuit breaker. */
+  private async attemptProvider<T>(
+    request: ChainRequest,
+    providerName: string,
+    modelName: string,
+    breakerKey: string,
+    state: AttemptState,
+    operation: (ctx: AttemptContext) => Promise<T>
+  ): Promise<T> {
+    const driver = await this.use(providerName)
+    return this.circuitBreaker.execute(
+      breakerKey,
+      () =>
+        operation({
+          getModel: () => driver.getModel(modelName),
+          modelName,
+          providerName,
+          breakerKey,
+          state,
+        }),
+      (err) => classifyError(err, request.abortSignal).countsAsFailure
+    )
   }
 
   /** Splits a `provider/model` string, but only when the prefix really is a configured provider. */
