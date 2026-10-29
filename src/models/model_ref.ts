@@ -22,25 +22,30 @@ export function parseModelRef({
     if (!knownProviderIds.includes(provider)) {
       throw new Error(`Unknown provider: ${provider}`)
     }
-
-    const providerPrefix = `${provider}/`
-    if (ref?.startsWith(providerPrefix)) {
-      return {
-        providerId: provider,
-        modelId: ref.slice(providerPrefix.length),
-        wasProviderPrefixed: true,
-      }
-    }
-
-    if (ref) {
-      return { providerId: provider, modelId: ref, wasProviderPrefixed: false }
-    }
+    const underProvider = parseUnderExplicitProvider(provider, ref)
+    if (underProvider) return underProvider
   }
 
   if (!ref) {
     throw new Error('A model reference or an explicit provider is required')
   }
+  return parseProviderPrefixed(ref, knownProviderIds)
+}
 
+/** A model under the explicit provider, with or without its own `provider/` prefix; `null` when there is no reference. */
+function parseUnderExplicitProvider(provider: string, ref: string | undefined): ParsedModelRef | null {
+  const providerPrefix = `${provider}/`
+  if (ref?.startsWith(providerPrefix)) {
+    return { providerId: provider, modelId: ref.slice(providerPrefix.length), wasProviderPrefixed: true }
+  }
+  if (ref) {
+    return { providerId: provider, modelId: ref, wasProviderPrefixed: false }
+  }
+  return null
+}
+
+/** A `provider/model` reference: the first segment must be a known provider, and a model id must follow. */
+function parseProviderPrefixed(ref: string, knownProviderIds: string[]): ParsedModelRef {
   const [candidateProvider, ...modelParts] = ref.split('/')
   if (!candidateProvider || !knownProviderIds.includes(candidateProvider)) {
     throw new Error(`Unknown provider: ${candidateProvider || ref}`)
