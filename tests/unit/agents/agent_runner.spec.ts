@@ -5,6 +5,9 @@ import { z } from 'zod'
 import { AiManager } from '../../../src/ai_manager.js'
 import { AgentRunner } from '../../../src/agents/agent_runner.js'
 import type { AgentPromptConfig } from '../../../src/agents/loader.js'
+import type { AgentRunnerOptions } from '../../../src/agents/agent_runner.js'
+import type { ActionGuard } from '../../../src/guard/types.js'
+import type { GenerateTextOptions } from '../../../src/types.js'
 import { defineConfig } from '../../../src/define_config.js'
 
 const usage = (inp: number, out: number) => ({
@@ -154,5 +157,159 @@ test.group('AgentRunner', () => {
     const runner = new AgentRunner(manager(model), agentConfig())
 
     await assert.rejects(() => runner.runStructured(undefined, 'hi'), /No schema provided/)
+  })
+
+})
+
+/** Always asks for the `ping` tool, so every step is a tool step. */
+const toolCallingModel = () =>
+  new MockLanguageModelV4({
+    provider: 'mock',
+    modelId: 'm',
+    doGenerate: async () => ({
+      content: [{ type: 'tool-call', toolCallId: 'c1', toolName: 'ping', input: '{}' }],
+      finishReason: { unified: 'tool-calls' as const, raw: 'tool-calls' },
+      usage: usage(10, 5),
+      warnings: [],
+    }),
+  })
+
+const outputLimit = async (
+  config: Partial<AgentPromptConfig>,
+  options: AgentRunnerOptions,
+  call: GenerateTextOptions = { prompt: 'hi' }
+) => {
+  const { model, calls } = recordingModel('done')
+  await new AgentRunner(manager(model), agentConfig(config), options).run(call)
+  return calls[0]?.maxOutputTokens
+}
+
+test.group('AgentRunner defaults and fallbacks', () => {
+  test('getters expose the agent identity and manifest', ({ assert }) => {
+    const config = agentConfig({ permissions: { ping: 'deny' } })
+    const runner = new AgentRunner(manager(recordingModel('x').model), config)
+
+    assert.equal(runner.getId(), 'writer')
+    assert.equal(runner.getDescription(), 'Writes things')
+    assert.equal(runner.getSystemPrompt(), 'AGENT-PROMPT')
+    assert.strictEqual(runner.getConfig(), config)
+    assert.deepEqual(runner.getPermissions(), { ping: 'deny' })
+  })
+
+  test('run() sends the runner default system prompt when the caller gives none', async ({ assert }) => {
+    const { model, calls } = recordingModel('done')
+
+    await new AgentRunner(manager(model), agentConfig(), { system: 'RUNNER-DEFAULT' }).run('hi')
+
+    const sent = JSON.stringify(calls[0]?.prompt)
+    assert.include(sent, 'AGENT-PROMPT')
+    assert.include(sent, 'RUNNER-DEFAULT')
+  })
+
+  test('run() uses the runner default tools when the call passes none', async ({ assert }) => {
+    const { model, calls } = recordingModel('done')
+
+    await new AgentRunner(manager(model), agentConfig(), { tools: { ping } }).run('hi')
+
+    const names = (calls[0]?.tools ?? []).map((t: { name: string }) => t.name)
+    assert.deepEqual(names, ['ping'])
+  })
+
+  test('defaultToolPermission "deny" removes tools the manifest does not mention', async ({ assert }) => {
+    const { model, calls } = recordingModel('done')
+    const runner = new AgentRunner(manager(model), agentConfig({ permissions: { ping: 'allow' } }), {
+      defaultToolPermission: 'deny',
+    })
+
+    await runner.run({ prompt: 'hi', tools: { ping, other: ping } })
+
+    const names = (calls[0]?.tools ?? []).map((t: { name: string }) => t.name)
+    assert.deepEqual(names, ['ping'])
+  })
+
+  test('output token limit resolves call, then runner, then deprecated runner, then manifest', async ({ assert }) => {
+    assert.equal(await outputLimit({}, { maxOutputTokens: 77 }, { prompt: 'hi', maxOutputTokens: 11 }), 11)
+    assert.equal(await outputLimit({}, { maxOutputTokens: 77 }), 77)
+    assert.equal(await outputLimit({}, { maxTokens: 33 }), 33)
+    assert.equal(await outputLimit({ maxTokens: 55 }, {}), 55)
+    assert.isUndefined(await outputLimit({}, {}))
+  })
+
+  test('maxSteps comes from the manifest stopSteps unless the call overrides it', async ({ assert }) => {
+    const runner = (stopSteps: number) =>
+      new AgentRunner(manager(toolCallingModel()), agentConfig({ stopSteps }), {
+        tools: { ping },
+      })
+
+    const fromManifest = await runner(3).run('hi')
+    assert.equal(fromManifest.steps?.length, 3)
+
+    const fromCall = await runner(3).run({ prompt: 'hi', maxSteps: 2 })
+    assert.equal(fromCall.steps?.length, 2)
+  })
+
+  test('run() applies the runner default tool guard when the call sets none', async ({ assert }) => {
+    const checked: string[] = []
+    const guard: ActionGuard = {
+      check: (toolName) => {
+        checked.push(toolName)
+        return null
+      },
+      record() {},
+      release() {},
+    }
+    const runner = new AgentRunner(manager(toolCallingModel()), agentConfig({ stopSteps: 1 }), {
+      tools: { ping },
+      toolGuard: { guard },
+    })
+
+    await runner.run('hi')
+
+    assert.deepEqual(checked, ['ping'])
+  })
+
+  test('runStructured() names the schema from the manifest, else the agent id', async ({ assert }) => {
+    const named = recordingModel('{"n":1}')
+    await new AgentRunner(
+      manager(named.model),
+      agentConfig({ outputSchemaName: 'Manifest', outputSchema: z.object({ n: z.number() }) })
+    ).runStructured(undefined, 'hi')
+    assert.equal(named.calls[0]?.responseFormat?.name, 'Manifest')
+
+    const unnamed = recordingModel('{"n":1}')
+    await new AgentRunner(manager(unnamed.model), agentConfig()).runStructured(z.object({ n: z.number() }), 'hi')
+    assert.equal(unnamed.calls[0]?.responseFormat?.name, 'writer')
+  })
+
+  test('run() resolves model and temperature: call, then runner, then manifest', async ({ assert }) => {
+    const { model, calls } = recordingModel('done')
+    const runner = new AgentRunner(
+      manager(model),
+      agentConfig({ model: 'manifest-model', temperature: 0.9 }),
+      { model: 'runner-model', temperature: 0.5 }
+    )
+
+    assert.equal((await runner.run('a')).model, 'runner-model')
+    assert.equal(calls[0]?.temperature, 0.5)
+
+    const fromCall = await runner.run({ prompt: 'b', model: 'call-model', temperature: 0.1 })
+    assert.equal(fromCall.model, 'call-model')
+    assert.equal(calls[1]?.temperature, 0.1)
+
+    const manifestOnly = new AgentRunner(manager(model), agentConfig({ model: 'manifest-model', temperature: 0.9 }))
+    assert.equal((await manifestOnly.run('c')).model, 'manifest-model')
+    assert.equal(calls[2]?.temperature, 0.9)
+  })
+
+  test('run() prefers call tools over runner defaults, and an explicit empty set disables them', async ({ assert }) => {
+    const { model, calls } = recordingModel('done')
+    const runner = new AgentRunner(manager(model), agentConfig(), { tools: { ping } })
+    const names = (i: number) => (calls[i]?.tools ?? []).map((t: { name: string }) => t.name)
+
+    await runner.run({ prompt: 'a', tools: { other: ping } })
+    assert.deepEqual(names(0), ['other'])
+
+    await runner.run({ prompt: 'b', tools: {} })
+    assert.deepEqual(names(1), [])
   })
 })
