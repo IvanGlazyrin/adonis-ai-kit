@@ -913,7 +913,7 @@ export class AiManager {
           baseURL: config.baseURL ?? process.env.OPENAI_BASE_URL,
           headers: config.headers,
         })
-        const defaultModel = config.defaultModel ?? 'gpt-4o'
+        const defaultModel = config.defaultModel ?? 'gpt-6-sol'
         return {
           name,
           defaultModel,
@@ -931,7 +931,7 @@ export class AiManager {
           baseURL: config.baseURL ?? process.env.ANTHROPIC_BASE_URL,
           headers: config.headers,
         })
-        const defaultModel = config.defaultModel ?? 'claude-3-7-sonnet-latest'
+        const defaultModel = config.defaultModel ?? 'claude-sonnet-5-5'
         return {
           name,
           defaultModel,
@@ -949,7 +949,7 @@ export class AiManager {
           baseURL: config.baseURL,
           headers: config.headers,
         })
-        const defaultModel = config.defaultModel ?? 'gemini-2.5-flash'
+        const defaultModel = config.defaultModel ?? 'gemini-3.5-flash'
         return {
           name,
           defaultModel,
@@ -967,7 +967,7 @@ export class AiManager {
           baseURL: config.baseURL,
           headers: config.headers,
         })
-        const defaultModel = config.defaultModel ?? 'llama-3.3-70b-versatile'
+        const defaultModel = config.defaultModel ?? 'openai/gpt-oss-120b'
         return {
           name,
           defaultModel,
