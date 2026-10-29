@@ -136,80 +136,105 @@ export class ToolRegistry {
         }
 
         // 1. Guard check (also reserves a call slot in guards that support it)
-        if (options.guard) {
-          const violation = options.guard.check(name, args)
-          if (violation) {
-            this.logger?.warn?.(
-              `[ToolRegistry] Tool "${name}" call rejected by guard: ${violation}`,
-              args
-            )
-            return {
-              error: `Rejected by policy guard: ${violation}. Adjust parameters to match approved bounds.`,
-            }
-          }
-        }
+        const refusal = this.guardRefusal(name, args, options.guard)
+        if (refusal) return refusal
 
-        // From here on a call slot may be held in the guard: it must end in exactly one
-        // record() (tool ran) or release() (tool did not run).
-        let executed = false
-        let slotSettled = false
-        const settleSlot = (result: unknown): void => {
-          if (slotSettled) return
-          slotSettled = true
-          options.guard?.record?.(name, result)
-        }
-
-        try {
-          // 2. Human-in-the-loop confirmation. Fail-closed: `ask` without a service never runs.
+        // 2-3. Confirmation for `ask`, then the tool itself, while holding the call slot.
+        return this.runHoldingSlot(name, options.guard, async (markExecuted) => {
           if (permission === 'ask') {
-            if (!options.confirmation) {
-              throw new PolicyViolationError(
-                name,
-                'permission is "ask" but no ConfirmationService was provided'
-              )
-            }
-
-            this.logger?.info?.(`[ToolRegistry] Requesting confirmation for "${name}"`)
-            const confirmation = await options.confirmation.waitForResponse(
-              {
-                sessionId: options.sessionId,
-                toolName: name,
-                action: describeTool(tool, name),
-                params: (args as Record<string, unknown>) ?? {},
-              },
-              options.timeoutMs,
-              execOptions?.abortSignal
-            )
-
-            if (confirmation.status !== 'approved') {
-              this.logger?.warn?.(
-                `[ToolRegistry] Tool "${name}" execution not approved: ${confirmation.status} (${confirmation.reason ?? 'no reason'})`
-              )
-              return {
-                error: `Tool "${name}" was not executed: ${confirmation.status}. ${confirmation.reason ?? ''}`.trim(),
-              }
-            }
+            const declined = await this.confirmOrDecline(name, tool, args, options, execOptions)
+            if (declined) return declined
           }
-
-          // 3. Execute underlying tool
-          executed = true
-          const result = await originalExecute(args, execOptions)
-
-          // 4. Record execution stats in guard
-          settleSlot(result)
-          return result
-        } catch (err) {
-          if (executed) {
-            settleSlot({ error: err instanceof Error ? err.message : String(err) })
-          }
-          throw err
-        } finally {
-          if (!slotSettled && options.guard) {
-            slotSettled = true
-            options.guard.release?.(name)
-          }
-        }
+          markExecuted()
+          return originalExecute(args, execOptions)
+        })
       },
+    }
+  }
+
+  /** The guard's refusal as a tool result, or `null` when the guard allows the call. */
+  private guardRefusal(
+    name: string,
+    args: unknown,
+    guard: ToolAccessOptions['guard'] | undefined
+  ): { error: string } | null {
+    const violation = guard?.check(name, args)
+    if (!violation) return null
+    this.logger?.warn?.(`[ToolRegistry] Tool "${name}" call rejected by guard: ${violation}`, args)
+    return {
+      error: `Rejected by policy guard: ${violation}. Adjust parameters to match approved bounds.`,
+    }
+  }
+
+  /**
+   * Human-in-the-loop check for `ask`. Fail-closed: `ask` without a service never runs.
+   * Returns `null` when approved, or the not-executed result otherwise.
+   */
+  private async confirmOrDecline(
+    name: string,
+    tool: ToolDefinition,
+    args: unknown,
+    options: WrapToolOptions,
+    execOptions: any
+  ): Promise<{ error: string } | null> {
+    if (!options.confirmation) {
+      throw new PolicyViolationError(name, 'permission is "ask" but no ConfirmationService was provided')
+    }
+
+    this.logger?.info?.(`[ToolRegistry] Requesting confirmation for "${name}"`)
+    const confirmation = await options.confirmation.waitForResponse(
+      {
+        sessionId: options.sessionId,
+        toolName: name,
+        action: describeTool(tool, name),
+        params: (args as Record<string, unknown>) ?? {},
+      },
+      options.timeoutMs,
+      execOptions?.abortSignal
+    )
+    if (confirmation.status === 'approved') return null
+
+    this.logger?.warn?.(
+      `[ToolRegistry] Tool "${name}" execution not approved: ${confirmation.status} (${confirmation.reason ?? 'no reason'})`
+    )
+    return {
+      error: `Tool "${name}" was not executed: ${confirmation.status}. ${confirmation.reason ?? ''}`.trim(),
+    }
+  }
+
+  /**
+   * Runs `body` holding the guard's call slot. The slot ends in exactly one `record()` (the tool
+   * ran, with its result or its error) or one `release()` (it did not run).
+   */
+  private async runHoldingSlot(
+    name: string,
+    guard: ToolAccessOptions['guard'] | undefined,
+    body: (markExecuted: () => void) => Promise<unknown>
+  ): Promise<unknown> {
+    let executed = false
+    let slotSettled = false
+    const settleSlot = (result: unknown): void => {
+      if (slotSettled) return
+      slotSettled = true
+      guard?.record?.(name, result)
+    }
+
+    try {
+      const result = await body(() => {
+        executed = true
+      })
+      if (executed) settleSlot(result)
+      return result
+    } catch (err) {
+      if (executed) {
+        settleSlot({ error: err instanceof Error ? err.message : String(err) })
+      }
+      throw err
+    } finally {
+      if (!slotSettled && guard) {
+        slotSettled = true
+        guard.release?.(name)
+      }
     }
   }
 
