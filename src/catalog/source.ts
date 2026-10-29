@@ -92,6 +92,25 @@ function sanitizeProvider(
   } as ModelsDevProvider
 }
 
+/**
+ * Which system providers to inject. The current `systemProviders` object wins; the deprecated
+ * `injectSystemProviders` flag applies to both kinds when it is the only setting.
+ */
+function systemProviderInjection(options: { systemProviders?: { fallback?: boolean; acp?: boolean }; injectSystemProviders?: boolean } | undefined): {
+  fallback: boolean
+  acp: boolean
+} {
+  const system = options?.systemProviders
+  const legacy = options?.injectSystemProviders ?? true
+  if (!system) return { fallback: legacy, acp: legacy }
+  return { fallback: system.fallback ?? true, acp: system.acp ?? true }
+}
+
+/** The value when it is a positive number, otherwise the default. */
+function positiveOr(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && value > 0 ? value : fallback
+}
+
 interface CacheValidators {
   etag: string | null
   lastModified: string | null
@@ -156,12 +175,10 @@ export class ModelsDevSource {
     this.#logger = options?.logger
     this.#customCachePath = options?.cachePath
     this.#customOverridePath = options?.overridePath
-    const system = options?.systemProviders
-    const legacy = options?.injectSystemProviders ?? true
-    this.#injectFallback = system ? (system.fallback ?? true) : legacy
-    this.#injectAcp = system ? (system.acp ?? true) : legacy
-    this.#ttlMs =
-      typeof options?.ttlMs === 'number' && options.ttlMs > 0 ? options.ttlMs : DEFAULT_TTL_MS
+    const injection = systemProviderInjection(options)
+    this.#injectFallback = injection.fallback
+    this.#injectAcp = injection.acp
+    this.#ttlMs = positiveOr(options?.ttlMs, DEFAULT_TTL_MS)
   }
 
   setLogger(logger: Logger): void {
