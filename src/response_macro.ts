@@ -131,46 +131,72 @@ export function registerResponseMacro() {
       heartbeat.unref?.()
     }
 
-    ;(async () => {
-      let fullText = ''
-      try {
-        for await (const chunk of streamResult.textStream) {
-          if (out.destroyed) break
-
-          fullText += chunk
-          options.onChunk?.(chunk)
-
-          if (mode === 'sse') {
-            const data = JSON.stringify({ type: 'chunk', text: chunk })
-            await write(`event: ${eventName}\ndata: ${data}\n\n`)
-          } else {
-            await write(chunk)
-          }
-        }
-
-        if (!out.destroyed) {
-          if (mode === 'sse') {
-            await write('data: [DONE]\n\n')
-          }
-          options.onFinish?.(fullText)
-        }
-      } catch (err) {
-        if (!out.destroyed) {
-          const error = err instanceof Error ? err : new Error(String(err))
-          options.onError?.(error)
-          if (mode === 'sse') {
-            const message = options.exposeErrors ? error.message : 'Stream failed'
-            await write(`event: error\ndata: ${JSON.stringify({ error: message })}\n\n`)
-          }
-        }
-      } finally {
+    void pumpFrames({
+      streamResult,
+      mode,
+      eventName,
+      options,
+      out,
+      write,
+      stopHeartbeat: () => {
         if (heartbeat) clearInterval(heartbeat)
-        out.push(null)
-      }
-    })()
+      },
+    })
 
     this.stream(out)
   })
+}
+
+/**
+ * Writes the model's text as frames until it ends or fails, then closes the body. A failure is
+ * reported to `onError` and, for SSE, sent as an error event; a finished stream sends the DONE marker.
+ */
+async function pumpFrames(input: {
+  streamResult: StreamTextResult
+  mode: 'sse' | 'text'
+  eventName: string
+  options: StreamAIOptions
+  out: Readable
+  write: (frame: string) => Promise<void>
+  stopHeartbeat: () => void
+}): Promise<void> {
+  const { streamResult, mode, eventName, options, out, write, stopHeartbeat } = input
+  let fullText = ''
+  try {
+    for await (const chunk of streamResult.textStream) {
+      if (out.destroyed) break
+
+      fullText += chunk
+      options.onChunk?.(chunk)
+      await write(chunkFrame(mode, eventName, chunk))
+    }
+
+    if (!out.destroyed) {
+      if (mode === 'sse') await write('data: [DONE]\n\n')
+      options.onFinish?.(fullText)
+    }
+  } catch (err) {
+    if (!out.destroyed) {
+      const error = err instanceof Error ? err : new Error(String(err))
+      options.onError?.(error)
+      if (mode === 'sse') await write(errorFrame(error, options.exposeErrors))
+    }
+  } finally {
+    stopHeartbeat()
+    out.push(null)
+  }
+}
+
+/** One text chunk: an SSE event for the SSE mode, the raw text otherwise. */
+function chunkFrame(mode: 'sse' | 'text', eventName: string, chunk: string): string {
+  if (mode !== 'sse') return chunk
+  return `event: ${eventName}\ndata: ${JSON.stringify({ type: 'chunk', text: chunk })}\n\n`
+}
+
+/** The SSE error event; the message reaches the client only when errors are exposed. */
+function errorFrame(error: Error, exposeErrors: boolean | undefined): string {
+  const message = exposeErrors ? error.message : 'Stream failed'
+  return `event: error\ndata: ${JSON.stringify({ error: message })}\n\n`
 }
 
 // Module augmentations so TypeScript recognizes response.streamAI
