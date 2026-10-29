@@ -112,14 +112,9 @@ export async function runModelChain<T>(
 
     // Acquired synchronously, before the first await of this attempt, so concurrent callers
     // cannot both claim the same half-open probe slot.
-    let permit: BreakerPermit | null = null
-    if (breaker) {
-      permit = breaker.acquire(candidate.key)
-      if (!permit) {
-        logger?.warn(`[model-chain] circuit breaker is not accepting calls for ${candidate.key}, skipping`)
-        continue
-      }
-    }
+    const acquired = acquireCandidate(candidate, breaker, logger)
+    if (!acquired) continue
+    const { permit } = acquired
 
     try {
       const model = await resolveCandidate(candidate, resolver)
@@ -170,6 +165,22 @@ export async function runModelChain<T>(
 
   if (hasError) throw lastError
   throw new ProviderUnavailableError('model-chain', 'no candidate model is available')
+}
+
+/**
+ * The breaker permit for a candidate: `{ permit: null }` when there is no breaker, the permit when it is
+ * granted, and `null` when the breaker refuses the candidate (the caller skips it).
+ */
+function acquireCandidate(
+  candidate: ChainCandidate,
+  breaker: CircuitBreaker | undefined,
+  logger: Logger | undefined
+): { permit: BreakerPermit | null } | null {
+  if (!breaker) return { permit: null }
+  const permit = breaker.acquire(candidate.key)
+  if (permit) return { permit }
+  logger?.warn(`[model-chain] circuit breaker is not accepting calls for ${candidate.key}, skipping`)
+  return null
 }
 
 /** A ref candidate needs a resolver; a configuration error is raised before any attempt. */
