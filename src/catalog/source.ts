@@ -184,36 +184,45 @@ export class ModelsDevSource {
     }
 
     const forceRemote = options.forceRemote ?? false
-    if (forceRemote && this.#cache && this.#cacheKey === source.key && this.#cacheAt) {
-      const ageMs = Date.now() - this.#cacheAt
-      if (!this.#cacheIsFallback && ageMs < 60_000) {
-        this.#logger?.info?.(
-          `[ModelsDevSource] refresh skipped — in-memory cache is fresh (${Math.round(ageMs / 1000)}s)`
-        )
-        return this.#cache
-      }
-    }
-
-    if (forceRemote && !source.overridePath) {
-      try {
-        const fileStat = await stat(source.cachePath)
-        const fileAgeMs = Date.now() - fileStat.mtimeMs
-        if (fileAgeMs < 120_000) {
-          const local = await this.#readLocalCache(source.cachePath)
-          if (local) {
-            this.#logger?.info?.(
-              `[ModelsDevSource] refresh: file fresh (${Math.round(fileAgeMs / 1000)}s), using local cache`
-            )
-            this.#store(source.key, this.#injectSystemProviders(local), false)
-            return this.#cache!
-          }
-        }
-      } catch {
-        // file doesn't exist or stat failed, fall through to fetch
-      }
+    if (forceRemote) {
+      const fresh = this.#freshFromMemory(source) ?? (await this.#freshFromFile(source))
+      if (fresh) return fresh
     }
 
     return this.#loadSource(source, { forceRemote })
+  }
+
+  /** The in-memory catalog when a real (non-fallback) one was loaded less than a minute ago. */
+  #freshFromMemory(source: ModelsDevSourceDescriptor): ModelsDevCatalog | undefined {
+    if (!this.#cache || this.#cacheKey !== source.key || !this.#cacheAt) return undefined
+    const ageMs = Date.now() - this.#cacheAt
+    if (this.#cacheIsFallback || ageMs >= 60_000) return undefined
+
+    this.#logger?.info?.(
+      `[ModelsDevSource] refresh skipped — in-memory cache is fresh (${Math.round(ageMs / 1000)}s)`
+    )
+    return this.#cache
+  }
+
+  /** The local file when it is under two minutes old. Skipped when an override file is in use. */
+  async #freshFromFile(source: ModelsDevSourceDescriptor): Promise<ModelsDevCatalog | undefined> {
+    if (source.overridePath) return undefined
+    try {
+      const fileStat = await stat(source.cachePath)
+      const fileAgeMs = Date.now() - fileStat.mtimeMs
+      if (fileAgeMs >= 120_000) return undefined
+
+      const local = await this.#readLocalCache(source.cachePath)
+      if (!local) return undefined
+      this.#logger?.info?.(
+        `[ModelsDevSource] refresh: file fresh (${Math.round(fileAgeMs / 1000)}s), using local cache`
+      )
+      this.#store(source.key, this.#injectSystemProviders(local), false)
+      return this.#cache!
+    } catch {
+      // file doesn't exist or stat failed, fall through to fetch
+      return undefined
+    }
   }
 
   resetCache(): void {
