@@ -1,6 +1,6 @@
 import type { LanguageModel } from 'ai'
 import { AcpDriver } from '../acp/provider.js'
-import type { AcpPermissionPolicy } from '../acp/types.js'
+import type { AcpAgentRuntimeConfig, AcpPermissionPolicy } from '../acp/types.js'
 import { ProviderConfigError } from '../errors.js'
 import type { ConfirmationService } from '../guard/confirmation.js'
 import type { Logger } from '../logger.js'
@@ -101,24 +101,35 @@ export class LanguageModelFactory {
     this.logger?.info(`[LLM Provider] Creating ACP agent for ${model.providerID}/${model.modelID}`)
     this.logger?.info(`[LLM Provider] ACP command: ${runtime.command} (cwd: ${runtime.cwd})`)
 
-    const key = `${runtime.command}::${runtime.cwd}`
     const shared = this.acp?.shareDriver !== false
-    let driver = shared ? this.drivers.get(key) : undefined
-    if (!driver) {
-      driver = new AcpDriver(
-        model.providerID,
-        {
-          driver: 'acp',
-          agentId,
-          permissionPolicy: this.acp?.permissionPolicy ?? 'ask',
-          inheritEnv: this.acp?.inheritEnv ?? false,
-        },
-        { logger: this.logger, confirmation: this.acp?.confirmation, runtime }
-      )
-      if (shared) this.drivers.set(key, driver)
-    }
+    const driver = this.driverFor(model, runtime, agentId, shared)
     const languageModel = await driver.getModel(agentId)
     return shared ? languageModel : this.releaseWhenCallEnds(driver, languageModel)
+  }
+
+  /** The shared driver for this command and cwd, created on first use; a per-call driver when sharing is off. */
+  private driverFor(
+    model: ResolvedModel,
+    runtime: AcpAgentRuntimeConfig,
+    agentId: string,
+    shared: boolean
+  ): AcpDriver {
+    const key = `${runtime.command}::${runtime.cwd}`
+    const existing = shared ? this.drivers.get(key) : undefined
+    if (existing) return existing
+
+    const driver = new AcpDriver(
+      model.providerID,
+      {
+        driver: 'acp',
+        agentId,
+        permissionPolicy: this.acp?.permissionPolicy ?? 'ask',
+        inheritEnv: this.acp?.inheritEnv ?? false,
+      },
+      { logger: this.logger, confirmation: this.acp?.confirmation, runtime }
+    )
+    if (shared) this.drivers.set(key, driver)
+    return driver
   }
 
   /**
