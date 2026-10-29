@@ -170,21 +170,36 @@ async function pumpFrames(input: {
       options.onChunk?.(chunk)
       await write(chunkFrame(mode, eventName, chunk))
     }
-
-    if (!out.destroyed) {
-      if (mode === 'sse') await write('data: [DONE]\n\n')
-      options.onFinish?.(fullText)
-    }
+    if (!out.destroyed) await finishStream(mode, write, options, fullText)
   } catch (err) {
-    if (!out.destroyed) {
-      const error = err instanceof Error ? err : new Error(String(err))
-      options.onError?.(error)
-      if (mode === 'sse') await write(errorFrame(error, options.exposeErrors))
-    }
+    if (!out.destroyed) await failStream(mode, write, options, err)
   } finally {
     stopHeartbeat()
     out.push(null)
   }
+}
+
+/** A finished stream: the DONE marker for SSE, then the finish callback. */
+async function finishStream(
+  mode: 'sse' | 'text',
+  write: (frame: string) => Promise<void>,
+  options: StreamAIOptions,
+  fullText: string
+): Promise<void> {
+  if (mode === 'sse') await write('data: [DONE]\n\n')
+  options.onFinish?.(fullText)
+}
+
+/** A failed stream: the error callback, then an error event for SSE. */
+async function failStream(
+  mode: 'sse' | 'text',
+  write: (frame: string) => Promise<void>,
+  options: StreamAIOptions,
+  err: unknown
+): Promise<void> {
+  const error = err instanceof Error ? err : new Error(String(err))
+  options.onError?.(error)
+  if (mode === 'sse') await write(errorFrame(error, options.exposeErrors))
 }
 
 /** One text chunk: an SSE event for the SSE mode, the raw text otherwise. */
