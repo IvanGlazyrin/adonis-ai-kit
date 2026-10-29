@@ -1,5 +1,6 @@
 import type {
   ActionGuard,
+  ConfirmationResponse,
   Logger,
   ToolDefinition,
   ToolPermission,
@@ -193,7 +194,11 @@ export class ToolRegistry {
       execOptions?.abortSignal
     )
     if (confirmation.status === 'approved') return null
+    return this.declinedResult(name, confirmation)
+  }
 
+  /** The not-executed result for a declined or expired confirmation, logged with its reason. */
+  private declinedResult(name: string, confirmation: ConfirmationResponse): { error: string } {
     this.logger?.warn?.(
       `[ToolRegistry] Tool "${name}" execution not approved: ${confirmation.status} (${confirmation.reason ?? 'no reason'})`
     )
