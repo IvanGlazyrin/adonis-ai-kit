@@ -45,6 +45,7 @@ import type { Logger } from './logger.js'
 export type LoggerContract = Logger
 
 type TextCallParams = Parameters<typeof generateText<ToolSet>>[0]
+type TextCallResult = Awaited<ReturnType<typeof generateText<ToolSet>>>
 type StreamCallParams = Parameters<typeof streamText<ToolSet>>[0]
 
 /** Lets the fallback loop know whether the failed attempt already ran tools (side effects). */
@@ -602,33 +603,13 @@ export class AiManager {
    * Generates text using the configured LLM provider with fallback, budget accounting, and tool guard.
    */
   async generateText(options: GenerateTextOptions): Promise<GenerateTextResult> {
-    const startTime = Date.now()
-    const agentName = options.agentName ?? this.config.budget?.defaultAgentName ?? 'default-agent'
+    const agentName = this.agentNameOf(options)
 
-    const { result, provider, model } = await this.executeWithFallback(
-      options,
-      async ({ getModel, modelName, providerName, state }) => {
-        void this.warmPricing(providerName, modelName)
-        const languageModel = await getModel()
-        const params = this.buildTextParams(options, languageModel, state, options.abortSignal)
-        return generateText(
-          options.schema ? ({ ...params, output: Output.object({ schema: options.schema }) } as TextCallParams) : params
-        )
-      }
-    )
-
-    const durationMs = Date.now() - startTime
-    // `totalUsage` sums every step of a tool loop; `usage` is the last step only.
-    const usage = normalizeUsage(result.totalUsage ?? result.usage)
-
-    const costUsd = await this.recordCost(
+    const { result, provider, model, usage, durationMs, costUsd } = await this.generateAndRecord(
       agentName,
-      provider,
-      model,
-      usage,
-      durationMs,
-      this.warmPricing(provider, model),
-      { finishReason: result.finishReason, ...options.metadata }
+      options,
+      options.schema ? Output.object({ schema: options.schema }) : undefined,
+      (done) => ({ finishReason: done.finishReason, ...options.metadata })
     )
     this.warnIfOverBudget(agentName, usage.totalTokens, costUsd)
 
@@ -656,7 +637,7 @@ export class AiManager {
    */
   async streamText(options: StreamTextOptions): Promise<StreamTextResult> {
     const startTime = Date.now()
-    const agentName = options.agentName ?? this.config.budget?.defaultAgentName ?? 'default-agent'
+    const agentName = this.agentNameOf(options)
 
     const controller = new AbortController()
     const signal = options.abortSignal
@@ -784,37 +765,15 @@ export class AiManager {
    * (via `generateText` with `Output.object`, as `generateObject` is deprecated in AI SDK v7).
    */
   async generateObject<T>(options: GenerateObjectOptions<T>): Promise<GenerateObjectResult<T>> {
-    const startTime = Date.now()
-    const agentName = options.agentName ?? this.config.budget?.defaultAgentName ?? 'default-agent'
-
-    const { result, provider, model } = await this.executeWithFallback(
+    const { result, provider, model, usage, durationMs, costUsd } = await this.generateAndRecord(
+      this.agentNameOf(options),
       options,
-      async ({ getModel, modelName, providerName, state }) => {
-        void this.warmPricing(providerName, modelName)
-        const languageModel = await getModel()
-        const params = this.buildTextParams(options, languageModel, state, options.abortSignal)
-        return generateText({
-          ...params,
-          output: Output.object({
-            schema: options.schema,
-            name: options.schemaName,
-            description: options.schemaDescription,
-          }),
-        } as TextCallParams)
-      }
-    )
-
-    const durationMs = Date.now() - startTime
-    const usage = normalizeUsage(result.totalUsage ?? result.usage)
-
-    const costUsd = await this.recordCost(
-      agentName,
-      provider,
-      model,
-      usage,
-      durationMs,
-      this.warmPricing(provider, model),
-      { mode: 'structured_object' }
+      Output.object({
+        schema: options.schema,
+        name: options.schemaName,
+        description: options.schemaDescription,
+      }),
+      () => ({ mode: 'structured_object' })
     )
 
     return {
@@ -825,6 +784,49 @@ export class AiManager {
       model,
       durationMs,
     }
+  }
+
+  /** Budget attribution name: the caller's agent, else the configured default. */
+  private agentNameOf(options: { agentName?: string }): string {
+    return options.agentName ?? this.config.budget?.defaultAgentName ?? 'default-agent'
+  }
+
+  /**
+   * Runs one text generation through the fallback chain, then records its usage and cost.
+   * `generateText` and `generateObject` share this and differ only in the output spec and the
+   * cost metadata.
+   */
+  private async generateAndRecord(
+    agentName: string,
+    options: GenerateTextOptions,
+    output: ReturnType<typeof Output.object> | undefined,
+    costMetadata: (result: TextCallResult) => Record<string, unknown>
+  ) {
+    const startTime = Date.now()
+    const { result, provider, model } = await this.executeWithFallback(
+      options,
+      async ({ getModel, modelName, providerName, state }) => {
+        void this.warmPricing(providerName, modelName)
+        const languageModel = await getModel()
+        const params = this.buildTextParams(options, languageModel, state, options.abortSignal)
+        return generateText({ ...params, ...(output ? { output } : {}) } as TextCallParams)
+      }
+    )
+
+    const durationMs = Date.now() - startTime
+    // `totalUsage` sums every step of a tool loop; `usage` is the last step only.
+    const usage = normalizeUsage(result.totalUsage ?? result.usage)
+    const costUsd = await this.recordCost(
+      agentName,
+      provider,
+      model,
+      usage,
+      durationMs,
+      this.warmPricing(provider, model),
+      costMetadata(result)
+    )
+
+    return { result, provider, model, usage, durationMs, costUsd }
   }
 
   /**
