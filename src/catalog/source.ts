@@ -441,34 +441,27 @@ export class ModelsDevSource {
       options.overridePath ?? this.#customOverridePath ?? process.env.MODELS_DEV_PATH
     if (overridePath) {
       const absolutePath = path.resolve(overridePath)
-      return {
-        key: `override:${absolutePath}`,
-        cachePath: absolutePath,
-        overridePath: absolutePath,
-      }
+      return { key: `override:${absolutePath}`, cachePath: absolutePath, overridePath: absolutePath }
     }
 
     const cacheOverride =
       options.cachePath ?? this.#customCachePath ?? process.env.MODELS_DEV_CACHE_PATH
     if (cacheOverride) {
       const absolutePath = path.resolve(cacheOverride)
-      return {
-        key: `cache:${absolutePath}`,
-        cachePath: absolutePath,
-      }
+      return { key: `cache:${absolutePath}`, cachePath: absolutePath }
     }
 
-    let defaultPath: string
+    const defaultPath = await this.#defaultCachePath()
+    return { key: `default:${defaultPath}`, cachePath: defaultPath }
+  }
+
+  /** The models.dev file under the app's storage folder, or under the working directory outside an app. */
+  async #defaultCachePath(): Promise<string> {
     try {
       const { default: app } = await import('@adonisjs/core/services/app')
-      defaultPath = app.makePath('storage', 'models', 'models.dev.json')
+      return app.makePath('storage', 'models', 'models.dev.json')
     } catch {
-      defaultPath = path.resolve(process.cwd(), 'storage', 'models', 'models.dev.json')
-    }
-
-    return {
-      key: `default:${defaultPath}`,
-      cachePath: defaultPath,
+      return path.resolve(process.cwd(), 'storage', 'models', 'models.dev.json')
     }
   }
 
