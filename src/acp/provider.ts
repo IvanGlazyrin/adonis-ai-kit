@@ -330,30 +330,21 @@ export class AcpDriver implements AiDriver {
     agentLabel: string
   ): Promise<AcpPermissionResponseLike> {
     const options = params.options ?? []
-    const select = (kinds: string[]): AcpPermissionResponseLike | null => {
-      const option = options.find((o) => kinds.includes(o.kind))
-      return option ? { outcome: { outcome: 'selected', optionId: option.optionId } } : null
-    }
-    const reject = (): AcpPermissionResponseLike =>
-      select(['reject_once', 'reject_always']) ?? { outcome: { outcome: 'cancelled' } }
-    // Never answer with `allow_always`: a single approval must not become a standing grant.
-    const allow = (): AcpPermissionResponseLike => select(['allow_once']) ?? reject()
-
     const title = params.toolCall?.title ?? params.toolCall?.kind ?? 'agent action'
 
     if (this.permissionPolicy === 'deny') {
       this.logger?.warn?.(`[ACP] Denied "${title}" requested by ${agentLabel} (policy: deny)`)
-      return reject()
+      return rejectOption(options)
     }
     if (this.permissionPolicy === 'allow') {
-      return allow()
+      return allowOption(options)
     }
 
     if (!this.confirmation) {
       this.logger?.warn?.(
         `[ACP] Denied "${title}" requested by ${agentLabel}: no ConfirmationService to ask a human`
       )
-      return reject()
+      return rejectOption(options)
     }
 
     const response = await this.confirmation.waitForResponse(
@@ -369,8 +360,28 @@ export class AcpDriver implements AiDriver {
       },
       this.config.permissionTimeoutMs
     )
-    return response.status === 'approved' ? allow() : reject()
+    return response.status === 'approved' ? allowOption(options) : rejectOption(options)
   }
+}
+
+type AcpPermissionOption = NonNullable<AcpPermissionRequestLike['options']>[number]
+
+/** The first offered option of one of `kinds`, as a selection; `null` when the agent offers none. */
+function selectOption(
+  options: AcpPermissionOption[],
+  kinds: string[]
+): AcpPermissionResponseLike | null {
+  const option = options.find((o) => kinds.includes(o.kind))
+  return option ? { outcome: { outcome: 'selected', optionId: option.optionId } } : null
+}
+
+function rejectOption(options: AcpPermissionOption[]): AcpPermissionResponseLike {
+  return selectOption(options, ['reject_once', 'reject_always']) ?? { outcome: { outcome: 'cancelled' } }
+}
+
+/** Never answers with `allow_always`: a single approval must not become a standing grant. */
+function allowOption(options: AcpPermissionOption[]): AcpPermissionResponseLike {
+  return selectOption(options, ['allow_once']) ?? rejectOption(options)
 }
 
 /**
