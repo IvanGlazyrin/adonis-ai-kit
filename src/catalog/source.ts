@@ -288,8 +288,6 @@ export class ModelsDevSource {
     modelRef: string,
     defaultProvider?: string
   ): Promise<{ providerId: string; modelId: string; entry?: ModelCatalogEntry }> {
-    const catalog = await this.load()
-
     // 1. Explicit syntax: "providerId/modelId"
     if (modelRef.includes('/')) {
       const [pId, ...rest] = modelRef.split('/')
@@ -299,48 +297,60 @@ export class ModelsDevSource {
       return { providerId: catalogId, modelId: mId, entry }
     }
 
-    const lookup = (providerId: string) => {
-      const provider = this.#provider(catalog, providerId)
-      if (!provider) return undefined
-      const models = provider.models ?? {}
-      if (Object.hasOwn(models, modelRef)) return { providerId, modelId: modelRef }
-      const alias = Object.keys(models)
-        .filter((id) => id.startsWith(`${modelRef}-`))
-        .sort()
-        .pop()
-      return alias ? { providerId, modelId: alias } : undefined
-    }
-
-    const toResult = (hit: { providerId: string; modelId: string }) => {
-      const provider = this.#provider(catalog, hit.providerId)!
-      return {
-        ...hit,
-        entry: this.#normalizeModel(hit.providerId, provider.name, provider.models[hit.modelId]),
-      }
-    }
-
-    // 2. Check default provider if specified
+    const catalog = await this.load()
+    // 2. The default provider, when one is given and has the model
     const defaultId = defaultProvider ? resolveCatalogProviderId(defaultProvider) : undefined
-    if (defaultId) {
-      const hit = lookup(defaultId)
-      if (hit) return toResult(hit)
-    }
-
-    // 3. Search catalog across all (non-ACP) providers: exact id first, then dated alias
-    const searchable = Object.keys(catalog).filter((id) => !id.startsWith('acp-'))
-    for (const pId of searchable) {
-      const provider = this.#provider(catalog, pId)
-      if (provider && Object.hasOwn(provider.models ?? {}, modelRef)) {
-        return toResult({ providerId: pId, modelId: modelRef })
-      }
-    }
-    for (const pId of searchable) {
-      const hit = lookup(pId)
-      if (hit) return toResult(hit)
-    }
+    const hit =
+      (defaultId ? this.#findInProvider(catalog, defaultId, modelRef) : undefined) ??
+      // 3. Otherwise search every non-ACP provider: exact id first, then dated alias
+      this.#findAcrossProviders(catalog, modelRef)
+    if (hit) return this.#withEntry(catalog, hit)
 
     // 4. Fallback: return defaultProvider or 'openai' with modelRef
     return { providerId: defaultId ?? 'openai', modelId: modelRef }
+  }
+
+  /** Exact id, or the newest dated model that extends `modelRef`, within one provider. */
+  #findInProvider(
+    catalog: ModelsDevCatalog,
+    providerId: string,
+    modelRef: string
+  ): { providerId: string; modelId: string } | undefined {
+    const models = this.#provider(catalog, providerId)?.models ?? {}
+    if (Object.hasOwn(models, modelRef)) return { providerId, modelId: modelRef }
+    const alias = Object.keys(models)
+      .filter((id) => id.startsWith(`${modelRef}-`))
+      .sort()
+      .pop()
+    return alias ? { providerId, modelId: alias } : undefined
+  }
+
+  #findAcrossProviders(
+    catalog: ModelsDevCatalog,
+    modelRef: string
+  ): { providerId: string; modelId: string } | undefined {
+    const searchable = Object.keys(catalog).filter((id) => !id.startsWith('acp-'))
+    const exact = searchable.find((pId) =>
+      Object.hasOwn(this.#provider(catalog, pId)?.models ?? {}, modelRef)
+    )
+    if (exact) return { providerId: exact, modelId: modelRef }
+
+    for (const pId of searchable) {
+      const hit = this.#findInProvider(catalog, pId, modelRef)
+      if (hit) return hit
+    }
+    return undefined
+  }
+
+  #withEntry(
+    catalog: ModelsDevCatalog,
+    hit: { providerId: string; modelId: string }
+  ): { providerId: string; modelId: string; entry: ModelCatalogEntry } {
+    const provider = this.#provider(catalog, hit.providerId)!
+    return {
+      ...hit,
+      entry: this.#normalizeModel(hit.providerId, provider.name, provider.models[hit.modelId]),
+    }
   }
 
   #provider(catalog: ModelsDevCatalog, providerId: string): ModelsDevProvider | undefined {
