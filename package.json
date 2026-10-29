@@ -119,7 +119,7 @@
     "@gitlab/gitlab-ai-provider": "*",
     "@mcpc-tech/acp-ai-provider": ">=0.1.0",
     "@openrouter/ai-sdk-provider": "*",
-    "ai": "^7.0.0"
+    "ai": "^7.0.137"
   },
   "dependencies": {
     "yaml": "^2.7.0",

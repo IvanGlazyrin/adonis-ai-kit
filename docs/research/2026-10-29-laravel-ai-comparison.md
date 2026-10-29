@@ -19,8 +19,8 @@
   Reranking, Files, Vector Stores, Usage, Testing, Events. Для них опираюсь на исходники, а не на docs.
 - Имена API Vercel AI SDK (`prepareStep`, `experimental_repairToolCall`, `providerOptions.anthropic.cacheControl`)
   не сверены с актуальной документацией. Перед реализацией проверить через context7.
-- Failover в non-stream пути (повторяется ли уже выполненный tool при переходе на другого провайдера) не
-  выяснен — см. «Открытые вопросы».
+- Failover в non-stream пути: повтор уже выполненных tools у laravel/ai подтверждён кодом (см. «Третья проверка»).
+  Тестов на это нет.
 
 ## Корректировки первоначальных выводов
 
@@ -42,9 +42,10 @@
    и `laravel:src/Responses/StreamableAgentResponse.php:289` (`hasYielded()`).
 4. **Их HTTP-клиент — Laravel HTTP client, не «cURL/Guzzle-обёртки».** В docs результат — `Illuminate\Http\Client\Response`
    (`$response->raw`). Утверждение в нашем `README.md:14-28` неточно — см. «Исправление README».
-5. **Наш README-тезис «безопасный fallback» не проверен против их failover.** Я не знаю, повторяют ли они
-   выполненные tools при переходе на другого провайдера в non-stream пути. Пока это не доказано, в README
-   нельзя писать «у них повторяются side-effects».
+5. **Их non-stream failover повторяет выполненные tools.** `laravel:src/Promptable.php:415-430` заново вызывает
+   run на следующем провайдере с теми же tools, шаги начинаются с нуля (`laravel:src/Gateway/TextGenerationLoop.php:134`).
+   Гарда нет, тестов на число выполнений tool нет. Стрим защищён: `hasYielded` отключает failover после tool-события.
+   Наш README-тезис «safe, never replays side-effects» нужен для нас самих, он не сравнение с ними; для него см. «Фазу 1a».
 
 ## Решения (приоритет и фаза)
 
@@ -82,8 +83,9 @@
 ### B3. Маркеры кэша промптов с TTL — P1
 
 - **У них:** `laravel:src/Attributes/CacheInstructions.php`, `CacheToolDefinitions`; реализация в
-  `laravel:src/Gateway/Anthropic/Concerns/BuildsTextRequests.php`. Смешивать разные TTL нельзя
-  (исключение из docs «Provider Options, Headers, and Caching»).
+  `laravel:src/Gateway/Anthropic/Concerns/BuildsTextRequests.php`. Код требует согласованности: 1h на instructions
+  требует 1h на tools (`:111-114`), 1h автокэш требует 1h на всех явных брейкпоинтах (`:117-120`).
+  Смешение 5m и 1h в целом не запрещено (прежняя формулировка «нельзя» была неточной, это из docs, а не из кода).
 - **У нас:** `cacheReadTokens` считается и показывается (`README.md:131`), но cache-маркеры не ставятся
   (в `adonis:src` нет `cacheControl`).
 - **Почему лучше:** учёт и реальная экономия связываются в одну систему. Бюджет уже знает про скидку
@@ -114,9 +116,11 @@
 
 ### B6. Правила для sub-agent'ов — P2
 
-- **У них (по docs и `laravel:src/Tools/AgentTool.php`, `laravel:src/Contracts/CanActAsTool.php`):**
-  sub-agent работает в изоляции без истории родителя; sub-agent не может вызывать tools, требующие
-  approval.
+- **У них (код, `laravel:src/Tools/AgentTool.php`, `laravel:src/Contracts/CanActAsTool.php`):**
+  sub-agent получает в `prompt()` только строку `task` (`:56`), изоляция от истории родителя подтверждена.
+  Gated tool внутри sub-agent не исполняется, но поведение зависит от режима: в non-conversational случае
+  `ApprovalNotResumableException` ловится (`:57-59`) и возвращается родителю текстом; в conversational пауза
+  сохраняется, а родителю уходит только `->text` — approval родителю не передаётся. Тестов на изоляцию нет.
 - **У нас:** `mode: 'subagent'` есть в `adonis:src/agents/manifest.ts`, правил изоляции не найдено.
 - **Почему лучше:** без изоляции sub-agent тратит токены на чужую историю, а approval-tools внутри
   sub-agent'а некуда направить.
@@ -124,9 +128,16 @@
 
 ### B7. Resumable approvals — P3 (самое ценное, самое дорогое)
 
-- **У них:** `laravel:src/Approvals/{Approval,PendingApproval,Decision,Decisions}.php`. Approvable-tool
-  по умолчанию требует подтверждения. Run сохраняется и продолжается позже. Без истории выбрасывается
-  `ApprovalNotResumableException` (`laravel:src/Exceptions/ApprovalNotResumableException.php`).
+- **У них (код):** `laravel:src/Approvals/{Approval,PendingApproval,Decision,Decisions}.php`. Гейтинг только для tools,
+  использующих `InteractsWithApprovals`, дефолт `needsApproval` = true (`laravel:src/Concerns/InteractsWithApprovals.php:49-52`).
+  Пауза хранится в БД: строка `paused` в `agent_conversation_messages`, причина в `steps[].approval_reason`
+  (`laravel:src/Storage/DatabaseConversationStore.php:322, 399-420`). Resume: `continue($id, $user)->prompt(Decisions::from([...]))`,
+  атомарно с `lockForUpdate` (`:~620-632`), несовпадение решений даёт `ApprovalMismatchException`.
+  Resume не fails over. `ApprovalNotResumableException` бросается в момент паузы (`laravel:src/Providers/Concerns/GeneratesText.php:90-92`),
+  при этом ungated tools того же шага уже исполнены (`tests/Feature/Providers/Anthropic/ToolApprovalGuardTest.php:141-170`).
+  Дефолт «требует подтверждения» действует только для собственных tools с трейтом. Встроенные tools
+  переопределяют `needsApproval` (`FilesystemTool.php:51`, `McpTool.php:145`, `McpServerTool.php:174`,
+  `SimilaritySearch.php:143`, `AgentTool.php:106`); по отчёту проверки они по умолчанию без подтверждения (построчно не сверял).
 - **У нас:** `adonis:src/guard/confirmation.ts:44` — `pending = new Map()` в памяти. Таймаут через
   `setTimeout` (`:114`). Если процесс перезапустился или человек ответил позже таймаута, действие теряется.
   `sessionId` (`:146`) только привязывает approve/reject.
@@ -143,8 +154,11 @@
   `conversationBelongsTo`, `pendingApprovalsFor` (docs «Conversation and Memory»).
 - **У нас:** истории диалогов нет. `sessionId` в `adonis:src/agents/agent_runner.ts:24` используется только
   для привязки approval (`adonis:src/ai_manager.ts:694`).
-- **Урок из их кода:** `continue()` не проверяет владельца, и это задокументировано как ответственность
-  вызывающего кода. Для нас владелец должен быть обязательным аргументом.
+- **Урок из их кода (подтверждён):** `continue()` принимает любой conversation id (`laravel:src/Concerns/RemembersConversations.php:36-41`).
+  Метод проверки владельца есть — контракт `laravel:src/Contracts/VerifiesConversationOwnership.php:10`, реализация
+  `laravel:src/Storage/DatabaseConversationStore.php:65` — но в `src` его никто не вызывает. Значит, любой, кто знает
+  conversation id и tool call id, может подтвердить чужой вызов. Для нас владелец должен быть обязательным аргументом
+  и проверяться внутри API, а не отдаваться вызывающему коду.
 - **Реализация:** интерфейс `ConversationStore` с in-memory дефолтом и адаптером под Lucid в приложении.
 - **Цена:** средняя.
 
@@ -167,8 +181,8 @@
   `adonis:src/circuit_breaker.ts`. `optimus-grid` потребляет событие: `app/services/llm/fallback_llm_service.ts:16-22`
   (`FallbackEvent`), `app/agents/orchestration/phases/agent_runner.ts:154-173`.
 - **Что осталось:** типизированный маркер для пользователей библиотеки — только если понадобится. Для наблюдаемости ничего не нужно.
-- **Сначала:** проверить их non-stream failover на повтор tools (см. «Открытые вопросы»). Это по-прежнему
-  не проверено, поэтому в README нельзя писать «у них повторяются side-effects».
+- **Сначала:** у них повтор tools при failover подтверждён кодом (см. «Третья проверка»), но тестами не закреплён.
+  Нам это нужно учитывать для собственного fallback: проверка по `step.toolCalls` и путь ACP (см. «Вторую проверку»).
 
 ## Не заимствуем
 
@@ -184,14 +198,20 @@
 
 - **Fail-closed реестр** (`adonis:src/guard/registry.ts`, `defaultPermission: 'deny'`) против opt-in approval.
 - **Circuit breaker по `provider:model`** (`adonis:src/circuit_breaker.ts`).
-- **Бюджет в USD** с учётом cache-read и reasoning-токенов (`adonis:README.md`, раздел 5).
+- **Бюджет в USD** с учётом cache-read и reasoning-токенов (`adonis:README.md`, раздел 5). У laravel/ai трекера
+  стоимости нет: grep по `price|cost|pricing` в `src`, `config`, `resources` пуст. Они отдают только токены
+  (`laravel:src/Responses/Data/TextUsage.php:14-19`).
+- **Учёт usage упавших попыток.** У них usage проваленной попытки теряется (`laravel:src/Middleware/RememberConversation.php:111`,
+  `laravel:src/Providers/Concerns/GeneratesText.php:94-112`), восстановить только через `StepCompleted`. У нас это вопрос
+  к `cost_tracker` — не проверено, учитываются ли токены неуспешных попыток.
 
 ## Исправление README
 
 `adonis:README.md:14-28` — таблица сравнения. Строки про Laravel AI надо переписать:
 
 - «Custom cURL/Guzzle wrappers» → неточно: Laravel HTTP client (`Illuminate\Http\Client`).
-- «Retries from scratch (risk of double actions)» → не проверено. Пока не доказано, убрать или переформулировать.
+- «Retries from scratch (risk of double actions)» → подтверждено кодом для non-stream пути (`laravel:src/Promptable.php:415-430`),
+  без тестов. Формулировку можно оставить, но с ссылкой на код или переформулировать мягче.
 - «Basic parameter mapping» для tool security → неточно: есть approval-flow, middleware со `Stop`.
 - «Static configuration files» для каталога → частично верно, уточнить.
 
@@ -275,6 +295,42 @@ B10 — реализован (см. выше).
 - Shared data bus и hooks engine — отложить.
 - Пункт про удаление обёртки в optimus — снят (см. выше).
 
+## Третья проверка laravel/ai (Haiku, 2026-10-29)
+
+Читал клон `C:\projects\laravel-ai` по вопросам из спеки. Ключевые отличия от первой версии:
+
+- **Fakes** (`laravel:src/Promptable.php:558-626`, `laravel:src/Concerns/InteractsWithFakeAgents.php:35-181`):
+  `Agent::fake(array|Closure)` возвращает `FakeTextGateway`. Ассерты только по промптам и очереди:
+  `assertPrompted`, `assertPromptedTimes`, `assertNotPrompted`, `assertNeverPrompted`, `assertQueued`,
+  `assertNotQueued`, `assertNeverQueued`, `isFaked`. Ассертов на tool calls, шаги, approvals и usage нет.
+  Tools не фейкаются. Usage у fake нулевой (`laravel:src/Gateway/FakeTextGateway.php:161-171`), бюджет на fake не проверить.
+  Есть `preventStrayPrompts()` у экземпляра gateway (`:241`), глобального флага нет.
+  Вывод для B4: наш fake должен фейкать и tools, и usage, иначе он не поможет тестировать бюджет.
+- **События** (47 файлов в `laravel:src/Events`): на run — `PromptingAgent`, `AgentPrompted`, `AgentFailed`,
+  `AgentFailedOver`; на approval — `ToolApprovalRequested`, `ToolApprovalResolved`; на шаг — `StartingStep`,
+  `StepCompleted` (с usage), `StepFailed` (`laravel:src/Gateway/RunContext.php:70-117`); на tool —
+  `InvokingTool`, `ToolInvoked`, `ToolFailed` (`laravel:src/Gateway/Concerns/InvokesTools.php:31, 42, 47`).
+  Исключение из listener'а `ToolFailed` уходит наружу мимо обёртки (`InvokesTools.php:42`).
+- **Ошибки tools глотаются в текст.** Модели уходит `The tool call failed: ...` с `failed: true`, ошибка логируется
+  через `report()` (`laravel:src/Gateway/TextGenerationLoop.php:781-790`). Отключить нельзя: ключей в `config/ai.php` нет.
+  Для breaker'а и бюджета приложения это невидимо, видно только через события.
+- **Skills (B5):** `LoadSkill` добавляется автоматически (`laravel:src/Promptable.php:397`). В description только имена
+  и описания (`laravel:src/Tools/LoadSkill.php:70-76`), тело возвращается как tool result (`:120-128`) и попадает в историю run'а,
+  а не в system prompt. Лимит 256 KB, проверка realpath и бинарности (`:133-160`). Экономия работает только если skill не загружен.
+- **Tool search (открытый вопрос):** локального BM25 нет. `laravel:src/Providers/Tools/ToolSearch.php` — provider-native,
+  strategy `regex|bm25` уходит провайдеру (`laravel:src/Gateway/Anthropic/Concerns/MapsTools.php:42-47`).
+  Для провайдеров без поддержки deferred tools разворачиваются в обычные (`laravel:src/Gateway/TextGenerationLoop.php:1156`).
+- **Vector stores:** `laravel:src/Stores.php`, `laravel:src/Store.php`, провайдерные file-stores; `SimilaritySearch` —
+  локальный инструмент поверх Eloquent (`whereVectorSimilarTo`).
+- **Не отражено в спеке, стоит знать:**
+  1. Повтор side-effects и потеря usage при failover (см. корректировку 5).
+  2. Встроенные tools с подтверждением по умолчанию не требуют (см. B7).
+  3. `continue()` без проверки владельца (см. B8).
+  4. Ошибки tools и sub-agent'ов глотаются в текст (см. выше).
+  5. Ungated tools шага исполняются до `ApprovalNotResumableException` (см. B7).
+- **Не проверено:** реальное поведение провайдеров при 429 посреди run'а (тесты используют только HTTP-fakes); документация
+  laravel.com не в клоне, поэтому утверждения из docs не сверялись.
+
 ## Порядок работ
 
 1. **Фаза 1 (дёшево, опираясь на примитивы `ai` 7):** B1 через `prepareStep`/`activeTools`, B3 через
@@ -289,8 +345,9 @@ B10 — реализован (см. выше).
 
 ## Открытые вопросы
 
-- Повторяются ли выполненные tools при failover в non-stream run'е у laravel/ai? Нужно прочитать
-  `laravel:src/Promptable.php` (`withModelFailover`, ~стр. 419) и тесты в `laravel:tests`.
-- Имена API Vercel AI SDK v7: `prepareStep`, `experimental_repairToolCall`, `cacheControl` — через context7.
+- ~~Повторяются ли выполненные tools при failover у laravel/ai?~~ Да, по коду (см. «Третья проверка»). Тестов нет.
+- Имена API Vercel AI SDK v7: `prepareStep`, `repairToolCall`, `cacheControl` — через context7.
+- Нужна ли нам проверка «tools уже выполнялись» на уровне kit, или достаточно `step.toolCalls` в `onStepFinish`?
+- Учитываются ли токены неуспешных попыток в `cost_tracker`?
 - Нужен ли RAG (embeddings, `SimilaritySearch`-аналог) в scope библиотеки? Если нет — пункт не входит в план.
 - Можно ли сделать `ToolSearch`-подобную отложенную загрузку tools (BM25) — нужна ли при текущем числе tools?

@@ -8,7 +8,8 @@ yarn-error.log*
 .npmrc
 *.tgz
 dist/
-docs/superpowers/specs/
+docs/superpowers/
+docs/research/
 .complexity/
 .jscpd-report/
 coverage/
