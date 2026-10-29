@@ -124,6 +124,18 @@ function conditionalHeaders({ etag, lastModified }: CacheValidators): Record<str
   return Object.keys(headers).length ? headers : undefined
 }
 
+/** Pricing as the budget uses it; a model without catalog cost has none. */
+function pricingOf(raw: ModelsDevModel): ModelPricing | undefined {
+  if (!raw.cost) return undefined
+  return {
+    input: raw.cost.input ?? 0,
+    output: raw.cost.output ?? 0,
+    cacheReadCostPer1M: raw.cost.cache_read,
+    cacheWriteCostPer1M: raw.cost.cache_write,
+    reasoningCostPer1M: raw.cost.reasoning,
+  }
+}
+
 function toCatalogCost(pricing: ModelPricing): ModelsDevModelCost {
   return {
     input: pricing.input,
@@ -410,16 +422,6 @@ export class ModelsDevSource {
    * Fields models.dev does not provide are reported as "unknown" (`false` / `0`), never guessed.
    */
   #normalizeModel(providerId: string, providerName: string, raw: ModelsDevModel): ModelCatalogEntry {
-    const pricing: ModelPricing | undefined = raw.cost
-      ? {
-          input: raw.cost.input ?? 0,
-          output: raw.cost.output ?? 0,
-          cacheReadCostPer1M: raw.cost.cache_read,
-          cacheWriteCostPer1M: raw.cost.cache_write,
-          reasoningCostPer1M: raw.cost.reasoning,
-        }
-      : undefined
-
     return {
       id: raw.id,
       name: raw.name ?? raw.id,
@@ -429,7 +431,7 @@ export class ModelsDevSource {
       outputLimit: raw.limit?.output ?? 0,
       toolCall: raw.tool_call ?? false,
       structuredOutput: raw.structured_output ?? false,
-      pricing,
+      pricing: pricingOf(raw),
       description: raw.description,
       headers: raw.headers,
       rawModel: raw,
