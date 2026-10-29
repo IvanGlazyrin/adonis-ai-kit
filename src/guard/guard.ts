@@ -46,30 +46,43 @@ export class PolicyGuard implements ActionGuard {
   }
 
   check(toolName: string, args: unknown): string | null {
+    const violation =
+      this.refuseDisallowedTool(toolName) ??
+      this.refuseWhenFull() ??
+      this.refuseFailingRule(toolName, args)
+    if (violation) return violation
+
+    this.inFlight += 1
+    return null
+  }
+
+  private refuseDisallowedTool(toolName: string): string | null {
     if (this.allowedTools && !this.allowedTools.has(toolName)) {
       return `Tool "${toolName}" is not permitted by policy`
     }
+    return null
+  }
 
+  private refuseWhenFull(): string | null {
     if (this.callCount + this.inFlight >= this.maxCalls) {
       return `Maximum allowed calls (${this.maxCalls}) exceeded for policy`
     }
+    return null
+  }
 
+  /** Runs the tool's parameter rules; the first violation wins. Fail-closed on non-object arguments. */
+  private refuseFailingRule(toolName: string, args: unknown): string | null {
     const toolRules = this.rules.get(toolName)
-    if (toolRules && toolRules.length > 0) {
-      // Fail-closed: rules cannot be evaluated against non-object arguments.
-      if (typeof args !== 'object' || args === null || Array.isArray(args)) {
-        return `Arguments for "${toolName}" must be an object to be validated by policy`
-      }
-      const record = args as Record<string, unknown>
-      for (const rule of toolRules) {
-        const violation = rule.validate(record[rule.field], record)
-        if (violation) {
-          return violation
-        }
-      }
-    }
+    if (!toolRules || toolRules.length === 0) return null
 
-    this.inFlight += 1
+    if (typeof args !== 'object' || args === null || Array.isArray(args)) {
+      return `Arguments for "${toolName}" must be an object to be validated by policy`
+    }
+    const record = args as Record<string, unknown>
+    for (const rule of toolRules) {
+      const violation = rule.validate(record[rule.field], record)
+      if (violation) return violation
+    }
     return null
   }
 
