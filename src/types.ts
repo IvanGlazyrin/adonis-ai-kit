@@ -13,9 +13,8 @@ import type { ActionGuard, ToolPermission } from './guard/types.js'
 import type { ConfirmationService } from './guard/confirmation.js'
 import type { AcpProviderConfig } from './acp/types.js'
 import type { ModelResolver } from './models/catalog_resolver.js'
-import type { LanguageModelFactory } from './models/language_model_factory.js'
 import type { FallbackEvent } from './models/model_chain.js'
-import type { ResolvedModel } from './models/types.js'
+import type { LanguageModelSource, ResolvedModel } from './models/types.js'
 
 export type CircuitBreakerState = 'closed' | 'open' | 'half_open'
 
@@ -198,8 +197,11 @@ export interface AiConfig {
   logging?: boolean
   /** Resolves string entries of a call's `models` chain. Required to use model references there. */
   resolver?: ModelResolver
-  /** Builds language models for `models` chains. Defaults to a `LanguageModelFactory` created lazily. */
-  languageModels?: LanguageModelFactory
+  /**
+   * Builds language models for `models` chains. Defaults to a `LanguageModelFactory` created lazily;
+   * `fakeLanguageModels()` (from `adonis-ai-kit/testing`) is a test replacement.
+   */
+  languageModels?: LanguageModelSource
 }
 
 /** Options shared by calls that can run over a dynamic model chain. */

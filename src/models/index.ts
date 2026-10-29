@@ -1,4 +1,4 @@
-export type { ResolvedModel } from './types.js'
+export type { LanguageModelSource, ResolvedModel } from './types.js'
 export { parseModelRef } from './model_ref.js'
 export type { ParseModelRefOptions, ParsedModelRef } from './model_ref.js'
 export { modelKeyFor, breakerKeyFor } from './keys.js'

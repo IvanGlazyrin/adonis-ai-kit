@@ -12,6 +12,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `AiManager` passes `onStepEnd` to the AI SDK instead of the deprecated `onStepFinish`. The `onStepFinish` option keeps working and runs after the side-effect check.
 - New `attemptSideEffectHooks()` export from `adonis-ai-kit/models` for code that calls the AI SDK directly: it returns the `onToolExecutionStart` and `onStepEnd` hooks that mark a side effect.
 
+### Added
+
+- `adonis-ai-kit/testing` subpath export: `fakeModel()` (scripted answers for `generateText` and `streamText`, recorded calls, assertions on prompts, offered tools and provider options), `fakeTools()` (recorded tool executions), `fakeApiError()`, `fakeProvider()`, `fakeLanguageModels()` and `fakeResolver()`. The fakes replace the model, so fallback, the circuit breaker, guards and cost tracking run as in production.
+- `LanguageModelSource` interface: `AiConfig.languageModels` accepts any object with `create(model)` and `shutdown()`. `LanguageModelFactory` already satisfies it.
+
 ## [1.2.1] - 2026-10-29
 
 ### Added

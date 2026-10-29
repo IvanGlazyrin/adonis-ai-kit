@@ -24,6 +24,7 @@ import {
   buildChainCandidates,
   runModelChain,
   type ChainCandidate,
+  type LanguageModelSource,
   type ResolvedModel,
 } from './models/index.js'
 import type {
@@ -399,7 +400,7 @@ export class AiManager {
     this.confirmation.dispose()
   }
 
-  private get languageModels(): LanguageModelFactory {
+  private get languageModels(): LanguageModelSource {
     return (
       this.config.languageModels ??
       (this.lazyLanguageModels ??= new LanguageModelFactory({

@@ -360,6 +360,31 @@ npm run test:regression
 - **Tool Guard**: Policy enforcement (`allow`, `ask`, `deny`), concurrency slots, fail-closed handlers, session validation.
 - **Adonis AI Core**: Cascading failovers with no fallback once a local tool has run (provider-executed tools and ACP agents: see docs), SSE keepalive frames, models.dev live discovery & TTL, ACP command sanitization.
 
+### Fakes for your tests
+
+`adonis-ai-kit/testing` replaces the model, not the manager, so fallback, the circuit breaker, guards and cost tracking run for real:
+
+```ts
+import { fakeModel, fakeProvider, fakeTools, fakeApiError } from 'adonis-ai-kit/testing'
+
+const model = fakeModel([
+  { toolCalls: [{ name: 'lookup', input: { id: 1 } }] },
+  { text: 'done', usage: { input: 100, output: 20, cacheRead: 60 } },
+])
+const tools = fakeTools({ lookup: () => ({ ok: true }) })
+
+const manager = new AiManager(defineConfig({ default: 'main', providers: { main: fakeProvider(model) } }))
+await manager.generateText({ prompt: 'x', tools: tools.tools, maxSteps: 2 })
+
+tools.assertToolCalled('lookup', { id: 1 })
+model.assertCalledTimes(2)
+```
+
+- A script answers one call per entry (or with a function of the call). An exhausted script throws `FakeScriptExhaustedError`.
+- Usage defaults to 10 input and 10 output tokens; set `usage` to test the cost tracker and the budget.
+- `fakeApiError(429)` (or 5xx) is classified like a provider error, so fallback can be tested.
+- `fakeLanguageModels({ 'provider/model': model })` and `fakeResolver()` cover `models` chains.
+
 ---
 
 ## Development & Release
