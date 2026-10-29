@@ -1,6 +1,6 @@
 import type { BreakerPermit, CircuitBreaker } from '../circuit_breaker.js'
 import { classifyError, type ErrorClass, type ErrorClassification } from '../error_classifier.js'
-import { ProviderConfigError, ProviderUnavailableError } from '../errors.js'
+import { AcpCallFailedError, ProviderConfigError, ProviderUnavailableError } from '../errors.js'
 import type { Logger } from '../logger.js'
 import type { ModelResolver } from './catalog_resolver.js'
 import { breakerKeyFor, modelKeyFor } from './keys.js'
@@ -207,7 +207,7 @@ function fallbackTarget(input: {
     `[model-chain] ${candidate.key} failed with ${classification.errorClass}; not falling back ` +
       `(kind=${classification.kind}, toolsExecuted=${toolsExecuted}, acpCallFailed=${acpCallFailed}, hasNext=${Boolean(next)})`
   )
-  throw error
+  throw acpCallFailed ? new AcpCallFailedError(candidate.key, error) : error
 }
 
 /** A ref candidate needs a resolver; a configuration error is raised before any attempt. */

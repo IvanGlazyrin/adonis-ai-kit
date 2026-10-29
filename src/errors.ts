@@ -57,6 +57,24 @@ export class BudgetExceededError extends AiException {
 }
 
 /**
+ * Thrown instead of falling back when an ACP agent failed during a run. The agent may already have changed files
+ * or run commands, so only the caller can decide: retry through the same agent, use another model, or cancel.
+ * The original error is kept in `original`, not `cause`, so error classification does not see it as retryable.
+ */
+export class AcpCallFailedError extends AiException {
+  readonly sideEffectsPossible = true
+
+  constructor(public agentKey: string, public original: unknown) {
+    const detail = original instanceof Error ? original.message : String(original)
+    super(
+      `ACP agent "${agentKey}" failed during a run and may have changed files: ${detail}`,
+      'E_AI_ACP_CALL_FAILED'
+    )
+    this.name = 'AcpCallFailedError'
+  }
+}
+
+/**
  * Thrown when a tool execution is rejected by security policy or fails during run.
  */
 export class ToolExecutionError extends AiException {

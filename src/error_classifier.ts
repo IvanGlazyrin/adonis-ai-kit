@@ -1,4 +1,4 @@
-import { AiException, ProviderUnavailableError } from './errors.js'
+import { AcpCallFailedError, AiException, ProviderUnavailableError } from './errors.js'
 
 /**
  * - `retryable`: transient upstream failure; try the next provider
@@ -245,6 +245,8 @@ function classifyWithoutStatus(error: unknown, abortSignal?: AbortSignal): Error
   if (abortSignal?.aborted) return outcomeOf('fatal', 'aborted by caller')
   if (error instanceof ProviderUnavailableError) return outcomeOf('skip', 'circuit breaker open')
   if (isSkippableConfigError(error)) return outcomeOf('skip', error.code)
+  // Its message quotes the agent's own error, which may mention a timeout; the decision is the caller's.
+  if (error instanceof AcpCallFailedError) return outcomeOf('fatal', 'ACP call failed; caller decides')
   if (error === null || typeof error !== 'object') return outcomeOf('fatal', 'unknown error')
 
   const name = (error as Record<string, any>).name
