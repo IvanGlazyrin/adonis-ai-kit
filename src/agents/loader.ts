@@ -3,9 +3,30 @@ import path from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import type { z } from 'zod'
 import type { Logger } from '../logger.js'
-import { agentManifestSchema, type ToolPermission } from './manifest.js'
+import { agentManifestSchema, type AgentManifest, type ToolPermission } from './manifest.js'
 
 const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+
+/** Strips a UTF-8 BOM and normalizes line endings so the frontmatter regex always matches. */
+function normalizeContent(content: string): string {
+  return content.replace(/^\u{FEFF}/u, '').replace(/\r\n/g, '\n')
+}
+
+/** Splits `---` frontmatter from the body. Returns `null` when the file has no frontmatter. */
+function splitFrontmatter(raw: string): { yaml: string; body: string } | null {
+  const match = raw.match(/^---\n([\s\S]*?)\n---(?:\n([\s\S]*))?$/)
+  return match ? { yaml: match[1], body: (match[2] ?? '').trim() } : null
+}
+
+function parseFrontmatter(agentId: string, yaml: string): unknown {
+  try {
+    return parseYaml(yaml)
+  } catch (err: unknown) {
+    throw new Error(
+      `Failed to parse YAML frontmatter for agent "${agentId}": ${err instanceof Error ? err.message : String(err)}`
+    )
+  }
+}
 
 export interface AgentPromptConfig {
   id: string
@@ -128,51 +149,9 @@ export class AgentLoader {
       throw new Error(`Agent prompt configuration file not found: ${filePath}`)
     }
 
-    const content = fs.readFileSync(filePath, 'utf-8')
-    // Strip a UTF-8 BOM and normalize line endings so the frontmatter regex always matches.
-    const raw = content.replace(/^\u{FEFF}/u, '').replace(/\r\n/g, '\n')
-
-    let manifestRaw: Record<string, unknown> = { id: agentId }
-    let body = raw.trim()
-
-    const match = raw.match(/^---\n([\s\S]*?)\n---(?:\n([\s\S]*))?$/)
-    if (match) {
-      try {
-        const parsed = parseYaml(match[1])
-        // `id` defaults to the file name when the frontmatter omits it
-        manifestRaw = { id: agentId, ...(parsed !== null && typeof parsed === 'object' ? parsed : {}) }
-        body = (match[2] ?? '').trim()
-      } catch (err: unknown) {
-        throw new Error(
-          `Failed to parse YAML frontmatter for agent "${agentId}": ${err instanceof Error ? err.message : String(err)}`
-        )
-      }
-    }
-
-    const manifestResult = agentManifestSchema.safeParse(manifestRaw)
-    if (!manifestResult.success) {
-      throw new Error(
-        `Invalid agent manifest for "${agentId}": ${manifestResult.error.message}`
-      )
-    }
-    const manifest = manifestResult.data
-
-    const skillPrompts: Record<string, string> = {}
-    const loadedSkillSections: string[] = []
-
-    for (const skillName of manifest.skills) {
-      const skillText = this.loadSkill(skillName, dirs.skillsDir)
-      if (skillText) {
-        skillPrompts[skillName] = skillText
-        loadedSkillSections.push(skillText)
-      }
-    }
-
-    // Dynamic injection of skills into system prompt
-    const systemPrompt = loadedSkillSections.length > 0
-      ? [body, ...loadedSkillSections].join('\n\n---\n\n')
-      : body
-
+    const raw = normalizeContent(fs.readFileSync(filePath, 'utf-8'))
+    const { manifest, body } = this.readManifest(agentId, raw)
+    const { systemPrompt, skillPrompts } = this.composeSkills(body, manifest.skills, dirs.skillsDir)
     const resolvedOutputSchema = manifest.outputSchema && this.schemaResolver
       ? this.schemaResolver(manifest.outputSchema)
       : undefined
@@ -199,6 +178,45 @@ export class AgentLoader {
 
     this.cache.set(cacheKey, config)
     return config
+  }
+
+  /** Reads the optional frontmatter and validates it. Without frontmatter the whole file is the body. */
+  private readManifest(agentId: string, raw: string): { manifest: AgentManifest; body: string } {
+    let manifestRaw: Record<string, unknown> = { id: agentId }
+    let body = raw.trim()
+
+    const parts = splitFrontmatter(raw)
+    if (parts) {
+      const parsed = parseFrontmatter(agentId, parts.yaml)
+      // `id` defaults to the file name when the frontmatter omits it
+      manifestRaw = { id: agentId, ...(parsed !== null && typeof parsed === 'object' ? parsed : {}) }
+      body = parts.body
+    }
+
+    const manifestResult = agentManifestSchema.safeParse(manifestRaw)
+    if (!manifestResult.success) {
+      throw new Error(`Invalid agent manifest for "${agentId}": ${manifestResult.error.message}`)
+    }
+    return { manifest: manifestResult.data, body }
+  }
+
+  /** Appends each skill that loads to the body; a skill that cannot load is skipped. */
+  private composeSkills(
+    body: string,
+    skillNames: string[],
+    skillsDir: string
+  ): { systemPrompt: string; skillPrompts: Record<string, string> } {
+    const skillPrompts: Record<string, string> = {}
+    const sections: string[] = []
+    for (const skillName of skillNames) {
+      const text = this.loadSkill(skillName, skillsDir)
+      if (text) {
+        skillPrompts[skillName] = text
+        sections.push(text)
+      }
+    }
+    const systemPrompt = sections.length > 0 ? [body, ...sections].join('\n\n---\n\n') : body
+    return { systemPrompt, skillPrompts }
   }
 
   async loadAllAgentPrompts(
