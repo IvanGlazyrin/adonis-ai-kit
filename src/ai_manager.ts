@@ -427,9 +427,7 @@ export class AiManager {
     }
 
     const target = this.resolveTarget(request)
-    const primary = target.provider ?? this.config.default
-    const cascade = [primary, ...(this.config.fallbackCascade ?? []).filter((p) => p !== primary)]
-
+    const cascade = this.cascadeFor(target.provider)
     const attempts: Array<{ provider: string; model: string; error: Error }> = []
 
     for (const [index, providerName] of cascade.entries()) {
@@ -452,18 +450,43 @@ export class AiManager {
         const result = await this.attemptProvider(request, providerName, modelName, breakerKey, state, operation)
         return { result, provider: providerName, model: modelName }
       } catch (err) {
-        const classification = classifyError(err, request.abortSignal)
-        this.assertCanFallBack(err, classification.kind, state, breakerKey)
-
-        const error = err instanceof Error ? err : new Error(String(err))
-        attempts.push({ provider: providerName, model: modelName, error })
-        this.logger?.warn?.(
-          `[AiManager] "${breakerKey}" failed (${classification.reason}: ${error.message}). Attempting next fallback...`
-        )
+        this.recordFailedAttempt(attempts, { err, request, providerName, modelName, breakerKey, state })
       }
     }
 
     throw new CascadingFallbackError(attempts)
+  }
+
+  /** The primary provider (the requested one, or the default), then the fallbacks that are not the primary. */
+  private cascadeFor(requested: string | undefined): string[] {
+    const primary = requested ?? this.config.default
+    return [primary, ...(this.config.fallbackCascade ?? []).filter((p) => p !== primary)]
+  }
+
+  /**
+   * Records a failed attempt and moves on, unless the failure may not fall back (fatal, or after tools
+   * ran), which rethrows it from assertCanFallBack.
+   */
+  private recordFailedAttempt(
+    attempts: Array<{ provider: string; model: string; error: Error }>,
+    failure: {
+      err: unknown
+      request: ChainRequest
+      providerName: string
+      modelName: string
+      breakerKey: string
+      state: AttemptState
+    }
+  ): void {
+    const { err, request, providerName, modelName, breakerKey, state } = failure
+    const classification = classifyError(err, request.abortSignal)
+    this.assertCanFallBack(err, classification.kind, state, breakerKey)
+
+    const error = err instanceof Error ? err : new Error(String(err))
+    attempts.push({ provider: providerName, model: modelName, error })
+    this.logger?.warn?.(
+      `[AiManager] "${breakerKey}" failed (${classification.reason}: ${error.message}). Attempting next fallback...`
+    )
   }
 
   /** One provider's attempt, run through its circuit breaker. */
