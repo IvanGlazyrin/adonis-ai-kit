@@ -128,48 +128,71 @@ export class LanguageModelFactory {
    */
   private releaseWhenCallEnds(driver: AcpDriver, model: LanguageModel): LanguageModel {
     if (typeof model !== 'object' || model === null) return model
-    let inFlight = 0
-    const begin = () => {
-      inFlight++
-      this.unsharedDrivers.add(driver)
-    }
-    // The ACP model cleans up its own agent process at the end of each turn. The driver is not shut
-    // down here: that would drop its provider, and a later step of the same call would then start a
-    // process that factory.shutdown() could no longer reach.
-    const end = () => {
-      if (--inFlight > 0) return
-      this.unsharedDrivers.delete(driver)
-    }
+    const track = this.trackCalls(driver)
 
     return new Proxy(model as object, {
       get: (target, prop) => {
         const value = Reflect.get(target, prop, target)
-        if (prop === 'doGenerate' && typeof value === 'function') {
-          return async (...args: unknown[]) => {
-            begin()
-            try {
-              return await value.apply(target, args)
-            } finally {
-              end()
-            }
-          }
-        }
-        if (prop === 'doStream' && typeof value === 'function') {
-          return async (...args: unknown[]) => {
-            begin()
-            let result: { stream: ReadableStream }
-            try {
-              result = await value.apply(target, args)
-            } catch (err) {
-              end()
-              throw err
-            }
-            return { ...result, stream: this.endWith(result.stream, end) }
-          }
-        }
-        return typeof value === 'function' ? value.bind(target) : value
+        if (typeof value !== 'function') return value
+        if (prop === 'doGenerate') return this.trackedGenerate(value, target, track)
+        if (prop === 'doStream') return this.trackedStream(value, target, track)
+        return value.bind(target)
       },
     }) as LanguageModel
+  }
+
+  /**
+   * In-flight accounting for one driver's per-call model. The driver is tracked from the first
+   * call until the last one ends.
+   */
+  private trackCalls(driver: AcpDriver): { begin: () => void; end: () => void } {
+    let inFlight = 0
+    return {
+      begin: () => {
+        inFlight++
+        this.unsharedDrivers.add(driver)
+      },
+      // The ACP model cleans up its own agent process at the end of each turn. The driver is not shut
+      // down here: that would drop its provider, and a later step of the same call would then start a
+      // process that factory.shutdown() could no longer reach.
+      end: () => {
+        if (--inFlight > 0) return
+        this.unsharedDrivers.delete(driver)
+      },
+    }
+  }
+
+  private trackedGenerate(
+    generate: (...args: unknown[]) => unknown,
+    target: object,
+    track: { begin: () => void; end: () => void }
+  ) {
+    return async (...args: unknown[]) => {
+      track.begin()
+      try {
+        return await generate.apply(target, args)
+      } finally {
+        track.end()
+      }
+    }
+  }
+
+  private trackedStream(
+    stream: (...args: unknown[]) => Promise<{ stream: ReadableStream }>,
+    target: object,
+    track: { begin: () => void; end: () => void }
+  ) {
+    return async (...args: unknown[]) => {
+      track.begin()
+      let result: { stream: ReadableStream }
+      try {
+        result = await stream.apply(target, args)
+      } catch (err) {
+        track.end()
+        throw err
+      }
+      return { ...result, stream: this.endWith(result.stream, track.end) }
+    }
   }
 
   /** Re-exposes a stream, calling `done` exactly once when it ends, errors or is cancelled. */
