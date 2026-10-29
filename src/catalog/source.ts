@@ -52,6 +52,11 @@ export function resolveCatalogProviderId(providerId: string): string {
   return Object.hasOwn(PROVIDER_ALIASES, providerId) ? PROVIDER_ALIASES[providerId] : providerId
 }
 
+/** The message of a thrown value, for logs. */
+function messageOf(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
@@ -515,14 +520,15 @@ export class ModelsDevSource {
     this.#logger?.info?.(`[ModelsDevSource] loading from override: ${source.overridePath}`)
     try {
       const data = sanitizeCatalog(JSON.parse(await readFile(source.overridePath, 'utf-8')))
-      if (data) return this.#injectSystemProviders(data)
-      this.#logger?.warn?.('[ModelsDevSource] override file has no valid providers')
+      if (!data) {
+        this.#logger?.warn?.('[ModelsDevSource] override file has no valid providers')
+        return null
+      }
+      return this.#injectSystemProviders(data)
     } catch (err) {
-      this.#logger?.warn?.(
-        `[ModelsDevSource] failed to parse override file: ${err instanceof Error ? err.message : String(err)}`
-      )
+      this.#logger?.warn?.(`[ModelsDevSource] failed to parse override file: ${messageOf(err)}`)
+      return null
     }
-    return null
   }
 
   /** Network failed: a stale cache is better than the built-in fallback catalog. */
