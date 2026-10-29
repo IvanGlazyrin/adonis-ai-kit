@@ -20,40 +20,47 @@ export function buildChainCandidates(input: {
   primary?: ResolvedModel | string
   defaults?: string[]
 }): ChainCandidate[] {
+  if (input.chain && input.chain.length > 0) return chainCandidates(input.chain)
+  return primaryAndDefaultCandidates(input.primary, input.defaults ?? [])
+}
+
+/** An explicit chain, de-duplicated on entry identity: one credential appears once per model it serves. */
+function chainCandidates(chain: ResolvedModel[]): ChainCandidate[] {
   const candidates: ChainCandidate[] = []
-
-  if (input.chain && input.chain.length > 0) {
-    // De-duplicate on ENTRY identity, not breaker identity: one credential legitimately appears
-    // once per model it serves, and those entries share a breaker (the credential is the failure domain).
-    const seenEntries = new Set<string>()
-    for (const model of input.chain) {
-      const key = breakerKeyFor(model)
-      const entryId = `${key}|${modelKeyFor(model)}`
-      if (seenEntries.has(entryId)) continue
-      seenEntries.add(entryId)
-      candidates.push({ kind: 'resolved', model, key })
-    }
-    return candidates
+  const seenEntries = new Set<string>()
+  for (const model of chain) {
+    const key = breakerKeyFor(model)
+    const entryId = `${key}|${modelKeyFor(model)}`
+    if (seenEntries.has(entryId)) continue
+    seenEntries.add(entryId)
+    candidates.push({ kind: 'resolved', model, key })
   }
+  return candidates
+}
 
+/** The primary, then the defaults that are not already the primary. */
+function primaryAndDefaultCandidates(
+  primary: ResolvedModel | string | undefined,
+  defaults: string[]
+): ChainCandidate[] {
+  const candidates: ChainCandidate[] = []
   const seenKeys = new Set<string>()
-  if (typeof input.primary === 'string') {
-    if (input.primary) {
-      candidates.push({ kind: 'ref', ref: input.primary, key: input.primary })
-      seenKeys.add(input.primary)
+  if (typeof primary === 'string') {
+    if (primary) {
+      candidates.push({ kind: 'ref', ref: primary, key: primary })
+      seenKeys.add(primary)
     }
-  } else if (input.primary) {
-    const key = breakerKeyFor(input.primary)
-    candidates.push({ kind: 'resolved', model: input.primary, key })
+  } else if (primary) {
+    const key = breakerKeyFor(primary)
+    candidates.push({ kind: 'resolved', model: primary, key })
     seenKeys.add(key)
   }
 
-  for (const ref of input.defaults ?? []) {
+  for (const ref of defaults) {
     if (!ref || seenKeys.has(ref)) continue
     candidates.push({ kind: 'ref', ref, key: ref })
     seenKeys.add(ref)
   }
-
   return candidates
 }
 
