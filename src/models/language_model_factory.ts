@@ -37,6 +37,12 @@ function redactHeaders(headers?: Record<string, string>): Record<string, string>
   )
 }
 
+/** The request's abort signal: the timeout, plus the caller's own signal when it gives one. */
+function requestSignal(timeoutMs: number, callerSignal: AbortSignal | null | undefined): AbortSignal {
+  const timeout = AbortSignal.timeout(timeoutMs)
+  return callerSignal ? AbortSignal.any([timeout, callerSignal]) : timeout
+}
+
 function requestUrl(input: Parameters<typeof fetch>[0]): string {
   return typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
 }
@@ -246,12 +252,10 @@ export class LanguageModelFactory {
       const url = requestUrl(input).slice(0, 120)
       const method = init?.method || 'POST'
       const startMs = Date.now()
-      const timeout = AbortSignal.timeout(timeoutMs)
-      const signal = init?.signal ? AbortSignal.any([timeout, init.signal]) : timeout
 
       logger?.debug?.(`[LLM HTTP] ${method} ${url} | timeout=${timeoutMs}ms`)
       try {
-        const response = await fetch(input, { ...init, signal })
+        const response = await fetch(input, { ...init, signal: requestSignal(timeoutMs, init?.signal) })
         logger?.debug?.(`[LLM HTTP] ${response.status} ${method} ${url} | ${Date.now() - startMs}ms`)
         return response
       } catch (err) {
