@@ -64,22 +64,32 @@ function sanitizeCatalog(json: unknown): ModelsDevCatalog | null {
   if (!isPlainObject(json)) return null
   const catalog: ModelsDevCatalog = {}
   for (const [id, provider] of Object.entries(json)) {
-    if (!isPlainObject(provider) || !isPlainObject(provider.models)) continue
-    const models: Record<string, ModelsDevModel> = {}
-    for (const [modelId, model] of Object.entries(provider.models)) {
-      if (isPlainObject(model)) {
-        models[modelId] = { ...model, id: typeof model.id === 'string' ? model.id : modelId } as ModelsDevModel
-      }
+    if (isPlainObject(provider) && isPlainObject(provider.models)) {
+      catalog[id] = sanitizeProvider(id, provider, provider.models)
     }
-    catalog[id] = {
-      ...provider,
-      id: typeof provider.id === 'string' ? provider.id : id,
-      name: typeof provider.name === 'string' ? provider.name : id,
-      env: Array.isArray(provider.env) ? (provider.env as string[]) : [],
-      models,
-    } as ModelsDevProvider
   }
   return Object.keys(catalog).length > 0 ? catalog : null
+}
+
+/** One provider with its models keyed by id; missing ids and names fall back to the catalog key. */
+function sanitizeProvider(
+  id: string,
+  provider: Record<string, unknown>,
+  rawModels: Record<string, unknown>
+): ModelsDevProvider {
+  const models: Record<string, ModelsDevModel> = {}
+  for (const [modelId, model] of Object.entries(rawModels)) {
+    if (isPlainObject(model)) {
+      models[modelId] = { ...model, id: typeof model.id === 'string' ? model.id : modelId } as ModelsDevModel
+    }
+  }
+  return {
+    ...provider,
+    id: typeof provider.id === 'string' ? provider.id : id,
+    name: typeof provider.name === 'string' ? provider.name : id,
+    env: Array.isArray(provider.env) ? (provider.env as string[]) : [],
+    models,
+  } as ModelsDevProvider
 }
 
 interface CacheValidators {
