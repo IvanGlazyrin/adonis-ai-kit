@@ -1,0 +1,12 @@
+{
+  "$schema": "https://unpkg.com/crap-check/schema.json",
+  "extensions": [".ts"],
+  "exclude": ["coverage/**", "dist/**", "tests/**"],
+  "coverage": [
+    {
+      "cwd": ".",
+      "command": "npx -y c8 --reporter=lcov --report-dir=coverage --include=\"src/**/*.ts\" --exclude=\"**/*.spec.ts\" npm test",
+      "lcov": "coverage/lcov.info"
+    }
+  ]
+}
