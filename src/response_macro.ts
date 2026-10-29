@@ -4,6 +4,48 @@ import type { StreamAIOptions, StreamTextResult } from './types.js'
 
 const DEFAULT_HEARTBEAT_MS = 15_000
 
+/** Headers for a plain or SSE body; the UI mode takes its headers from the SDK response. */
+function streamHeaders(mode: 'sse' | 'text'): Record<string, string> {
+  if (mode === 'sse') {
+    return {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-transform',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    }
+  }
+  return {
+    'Content-Type': 'text/plain; charset=utf-8',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+  }
+}
+
+/** AI SDK UI message stream: hand over the SDK's own protocol, compatible with `useChat`. */
+function pipeUiStream(
+  response: HttpResponse,
+  streamResult: StreamTextResult,
+  setHeaders: (headers: Record<string, string>) => void,
+  abortGeneration: () => void
+): void {
+  const uiResponse = streamResult.toUIMessageStreamResponse()
+  const headers: Record<string, string> = {}
+  uiResponse.headers.forEach((value, key) => {
+    headers[key] = value
+  })
+  setHeaders(headers)
+  response.status(uiResponse.status)
+  if (!uiResponse.body) {
+    response.send('')
+    return
+  }
+  const body = Readable.fromWeb(uiResponse.body as import('node:stream/web').ReadableStream)
+  body.on('close', () => {
+    if (!body.readableEnded) abortGeneration()
+  })
+  response.stream(body)
+}
+
 /**
  * Registers the response.streamAI macro on the AdonisJS HttpResponse class.
  * Streams LLM output to React/Inertia clients via Server-Sent Events, the AI SDK UI message
@@ -48,39 +90,11 @@ export function registerResponseMacro() {
 
     // AI SDK UI message stream: hand over the SDK's own protocol, compatible with `useChat`.
     if (mode === 'ui') {
-      const uiResponse = streamResult.toUIMessageStreamResponse()
-      const headers: Record<string, string> = {}
-      uiResponse.headers.forEach((value, key) => {
-        headers[key] = value
-      })
-      setHeaders(headers)
-      this.status(uiResponse.status)
-      if (!uiResponse.body) {
-        this.send('')
-        return
-      }
-      const body = Readable.fromWeb(uiResponse.body as import('node:stream/web').ReadableStream)
-      body.on('close', () => {
-        if (!body.readableEnded) abortGeneration()
-      })
-      this.stream(body)
+      pipeUiStream(this, streamResult, setHeaders, abortGeneration)
       return
     }
 
-    if (mode === 'sse') {
-      setHeaders({
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache, no-transform',
-        'Connection': 'keep-alive',
-        'X-Accel-Buffering': 'no',
-      })
-    } else {
-      setHeaders({
-        'Content-Type': 'text/plain; charset=utf-8',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-      })
-    }
+    setHeaders(streamHeaders(mode))
     this.status(200)
 
     let waiter: (() => void) | null = null
