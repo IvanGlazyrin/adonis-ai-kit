@@ -216,19 +216,24 @@ import { ToolRegistry, ConfirmationService, PolicyGuard } from 'adonis-ai-kit/gu
 import { tool } from 'ai'
 import { z } from 'zod'
 
-const confirmationService = new ConfirmationService({ timeoutMs: 60_000 })
-const registry = new ToolRegistry(confirmationService)
+const confirmationService = new ConfirmationService({ defaultTimeoutMs: 60_000 })
+const registry = new ToolRegistry()
 
 // Define tools
-registry.register(
+registry.registerTool(
   'deploy_service',
   tool({
     description: 'Deploy service to cluster',
-    parameters: z.object({ cluster: z.string(), service: z.string() }),
+    inputSchema: z.object({ cluster: z.string(), service: z.string() }),
     execute: async ({ cluster, service }) => `Deployed ${service} to ${cluster}`,
   }),
-  { permission: 'ask', maxCallsPerSession: 1 } // Requires human confirmation!
+  'ask' // Requires human confirmation!
 )
+
+const tools = registry.getToolsForAgent('ops-agent', {
+  confirmation: confirmationService,
+  guard: new PolicyGuard({ maxCalls: 1 }),
+})
 
 // When the model calls 'deploy_service', confirmationService pauses execution,
 // emits a confirmation request event, and resumes only when approved!
@@ -243,22 +248,22 @@ import { CostTracker, BudgetEnforcer } from 'adonis-ai-kit/budget'
 
 const tracker = new CostTracker({ maxRecords: 10_000 })
 const enforcer = new BudgetEnforcer({
-  maxCostUsd: 100.0,
-  maxInputTokens: 5_000_000,
-  maxOutputTokens: 1_000_000,
+  perSessionMaxCostUsd: 100.0,
+  perSessionMaxTokens: 5_000_000,
+  perAgentMaxTokens: 1_000_000,
 })
 
 // Atomic pre-flight reservation prevents concurrent race conditions
-const reservation = enforcer.reserve('user-session-42', { estimatedCostUsd: 0.05 })
-if (!reservation.allowed) {
+const reservation = enforcer.reserve('support-agent', 4_000, 0.05)
+if (!reservation) {
   throw new Error('Budget exceeded')
 }
 
 try {
   // run LLM request...
-  enforcer.settle(reservation.reservationId, { costUsd: 0.038 })
+  enforcer.settle(reservation, 3_200, 0.038)
 } catch (e) {
-  enforcer.release(reservation.reservationId)
+  enforcer.release(reservation)
 }
 ```
 
@@ -269,18 +274,11 @@ try {
 Run subagents using local CLI tools like **Claude Code**, **opencode**, or custom ACP binaries with sanitized environments:
 
 ```ts
-import { AgentRunner, AgentLoader } from 'adonis-ai-kit/agents'
+import ai from 'adonis-ai-kit/services/main'
 
-const loader = new AgentLoader({
-  configsDir: './resources/agent-configs',
-  skillsDir: './resources/agent-skills',
-})
-
-const runner = new AgentRunner(aiManager, registry, loader)
-const execution = await runner.run({
-  agentId: 'code-reviewer',
-  userPrompt: 'Audit packages/adonis-ai for race conditions',
-})
+// Loads resources/agent-configs/code-reviewer.md and its skills (see `agentConfigsDir` / `agentSkillsDir`)
+const runner = await ai.agent('code-reviewer')
+const execution = await runner.run('Audit packages/adonis-ai for race conditions')
 ```
 
 Agents declare the credentials they need and can receive a project MCP server explicitly:
@@ -342,8 +340,8 @@ result.model    // its modelID
 # Test connectivity, latency, and model availability across configured providers
 node ace ai:test
 
-# Scaffold a new production agent prompt and schema
-node ace make:ai-agent backend-architect --mode=primary
+# Scaffold a typed AI agent class in app/ai/agents
+node ace make:ai-agent SupportChat --provider=openai --model=gpt-6-sol
 ```
 
 ---

@@ -1,6 +1,6 @@
 {
   "name": "adonis-ai-kit",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Production-ready AI & Agentic workflow kit for AdonisJS 7 (Vercel AI SDK v7, multi-provider fallbacks, ACP & token budget enforcement)",
   "keywords": [
     "adonisjs",
