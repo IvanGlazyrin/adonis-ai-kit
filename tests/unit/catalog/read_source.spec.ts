@@ -3,6 +3,7 @@ import { utimes } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from '@japa/runner'
+import { DEFAULT_MODEL_PRICING } from '../../../src/budget/pricing.js'
 import { ModelsDevSource } from '../../../src/catalog/source.js'
 
 const provider = (id: string) => ({ id, name: id, env: [], models: { m1: { id: 'm1', name: 'M1', tool_call: true } } })
@@ -122,6 +123,20 @@ test.group('ModelsDevSource source selection', () => {
       const cat = await sourceAt(dir).load()
       assert.property(cat, 'openai')
       assert.property(cat, 'anthropic')
+    })
+  })
+
+  test('every fallback catalog model is priced from the built-in table', async ({ assert }) => {
+    const dir = dirWith()
+
+    await withFailingFetch(async () => {
+      const cat = await sourceAt(dir).load()
+      for (const providerId of ['openai', 'anthropic', 'google', 'groq']) {
+        for (const model of Object.values(cat[providerId].models)) {
+          assert.isDefined(model.cost, `${providerId}/${model.id} has no table price`)
+        }
+      }
+      assert.equal(cat.openai.models['gpt-4o'].cost?.input, DEFAULT_MODEL_PRICING['gpt-4o'].input)
     })
   })
 })

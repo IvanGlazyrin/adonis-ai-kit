@@ -78,6 +78,26 @@ test.group('AiManager catalog pricing', () => {
     assert.notEqual(result.costUsd, 2)
   })
 
+  test('a catalog price wins over the built-in table for the same model', async ({ assert }) => {
+    const { overridePath, cachePath } = catalogFile()
+    writeFileSync(
+      overridePath,
+      JSON.stringify({
+        custom: {
+          id: 'custom',
+          name: 'Custom',
+          env: [],
+          models: { 'gpt-4o': { id: 'gpt-4o', name: 'GPT-4o', cost: { input: 1, output: 3 } } },
+        },
+      })
+    )
+    const ai = manager({ overridePath, cachePath })
+
+    await (ai as any).warmPricing('main', 'gpt-4o')
+
+    assert.closeTo(ai.getCostTracker().calculateCost('gpt-4o', 1_000_000, 1_000_000), 4, 1e-9)
+  })
+
   test('a failing catalog lookup does not fail the call', async ({ assert }) => {
     const ai = manager(catalogFile())
     ;(ai as any).catalog.getModelPricing = async () => {
