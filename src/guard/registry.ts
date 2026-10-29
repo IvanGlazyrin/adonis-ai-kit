@@ -280,17 +280,19 @@ export class ToolRegistry {
     return result
   }
 
+  /** The per-call map decides when given (the registry default for names it omits); otherwise the agent matrix. */
+  private permissionFor(agentName: string, name: string, options: ToolAccessOptions): ToolPermission {
+    if (!options.permissions) return this.getAgentPermission(agentName, name)
+    return Object.hasOwn(options.permissions, name) ? options.permissions[name] : this.defaultPermission
+  }
+
   private resolveTool(
     agentName: string,
     name: string,
     tool: ToolDefinition,
     options: ToolAccessOptions
   ): ToolDefinition | null {
-    const permission = options.permissions
-      ? Object.hasOwn(options.permissions, name)
-        ? options.permissions[name]
-        : this.defaultPermission
-      : this.getAgentPermission(agentName, name)
+    const permission = this.permissionFor(agentName, name, options)
     if (permission === 'deny') {
       return null
     }
