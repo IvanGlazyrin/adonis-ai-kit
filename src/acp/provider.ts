@@ -217,7 +217,7 @@ export class AcpDriver implements AiDriver {
       ? buildAcpRuntimeConfig(agentId, (key) => this.env[key], this.env, this.logger)
       : null
 
-    const cwd = this.config.cwd ?? builtFromEnv?.cwd ?? process.cwd()
+    const cwd = this.cwdFor(builtFromEnv)
     requireAbsoluteCwd(this.name, cwd)
 
     return {
@@ -225,8 +225,21 @@ export class AcpDriver implements AiDriver {
       cwd,
       env: this.agentEnv(builtFromEnv),
       mcpServers: this.mcpServersFor(builtFromEnv?.mcpServers ?? []),
-      authMethodId: this.config.authMethodId ?? builtFromEnv?.authMethodId ?? predefined?.authMethodId,
+      authMethodId: this.authMethodFor(predefined, builtFromEnv),
     }
+  }
+
+  /** The working directory: the provider's, then the environment's, then the process's own. */
+  private cwdFor(builtFromEnv: AcpAgentRuntimeConfig | null): string {
+    return this.config.cwd ?? builtFromEnv?.cwd ?? process.cwd()
+  }
+
+  /** The auth method: the provider's, then the environment's, then the built-in agent table's. */
+  private authMethodFor(
+    predefined: AcpAgentConfig | undefined,
+    builtFromEnv: AcpAgentRuntimeConfig | null
+  ): string | undefined {
+    return this.config.authMethodId ?? builtFromEnv?.authMethodId ?? predefined?.authMethodId
   }
 
   /** The command and its arguments: an explicit command never inherits the built-in agent's arguments. */
