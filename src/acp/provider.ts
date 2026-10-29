@@ -201,18 +201,7 @@ export class AcpDriver implements AiDriver {
   }
 
   private resolveRuntimeConfig(agentId: string): AcpAgentRuntimeConfig {
-    if (this.runtime) {
-      if (!path.isAbsolute(this.runtime.cwd)) {
-        throw new ProviderConfigError(
-          this.name,
-          `ACP "cwd" must be an absolute path, got "${this.runtime.cwd}"`
-        )
-      }
-      return {
-        ...this.runtime,
-        env: buildAgentEnv(this.env, this.runtime.env, this.config.inheritEnv),
-      }
-    }
+    if (this.runtime) return this.prebuiltRuntime(this.runtime)
 
     const predefined = getAcpAgentConfig(agentId)
     const explicitCommand = this.config.command
@@ -229,45 +218,53 @@ export class AcpDriver implements AiDriver {
       ? buildAcpRuntimeConfig(agentId, (key) => this.env[key], this.env, this.logger)
       : null
 
-    const command = explicitCommand ?? builtFromEnv?.command ?? predefined!.command
-    const args = this.config.args ?? (explicitCommand ? [] : (builtFromEnv?.args ?? predefined!.args))
-
     const cwd = this.config.cwd ?? builtFromEnv?.cwd ?? process.cwd()
-    if (!path.isAbsolute(cwd)) {
-      throw new ProviderConfigError(this.name, `ACP "cwd" must be an absolute path, got "${cwd}"`)
+    requireAbsoluteCwd(this.name, cwd)
+
+    return {
+      command: explicitCommand ?? builtFromEnv?.command ?? predefined!.command,
+      // An explicit command never inherits the built-in agent's arguments.
+      args: this.config.args ?? (explicitCommand ? [] : (builtFromEnv?.args ?? predefined!.args)),
+      cwd,
+      env: buildAgentEnv(
+        this.env,
+        { ...(builtFromEnv?.env ?? {}), ...(this.config.env ?? {}) },
+        this.config.inheritEnv
+      ),
+      mcpServers: this.mcpServersFor(builtFromEnv?.mcpServers ?? []),
+      authMethodId: this.config.authMethodId ?? builtFromEnv?.authMethodId ?? predefined?.authMethodId,
     }
+  }
 
-    const env = buildAgentEnv(
-      this.env,
-      { ...(builtFromEnv?.env ?? {}), ...(this.config.env ?? {}) },
-      this.config.inheritEnv
-    )
+  /** A prebuilt runtime is used as given; only its env is merged with the process env. */
+  private prebuiltRuntime(runtime: AcpAgentRuntimeConfig): AcpAgentRuntimeConfig {
+    requireAbsoluteCwd(this.name, runtime.cwd)
+    return { ...runtime, env: buildAgentEnv(this.env, runtime.env, this.config.inheritEnv) }
+  }
 
-    const mcpServers: AcpMcpServerConfig[] = [...(builtFromEnv?.mcpServers ?? [])]
+  /** Built-in servers first, then configured ones; invalid entries are dropped with a warning. */
+  private mcpServersFor(builtIn: AcpMcpServerConfig[]): AcpMcpServerConfig[] {
+    const servers = [...builtIn]
     for (const server of this.config.mcpServers ?? []) {
       const normalized = normalizeMcpServer(server)
-      if (normalized) mcpServers.push(normalized)
+      if (normalized) servers.push(normalized)
       else this.logger?.warn?.(`[AcpDriver] Ignoring invalid MCP server in provider "${this.name}"`)
     }
     if (this.config.enableProjectMcp) {
-      if (this.config.projectMcp) {
-        const project = buildProjectMcpServer(this.config.projectMcp, this.logger)
-        if (project) mcpServers.push(project)
-      } else {
-        this.logger?.warn?.(
-          `[AcpDriver] enableProjectMcp is set on "${this.name}" but "projectMcp.path" is missing; skipping.`
-        )
-      }
+      const project = this.projectMcpServer()
+      if (project) servers.push(project)
     }
+    return servers
+  }
 
-    return {
-      command,
-      args,
-      cwd,
-      env,
-      mcpServers,
-      authMethodId: this.config.authMethodId ?? builtFromEnv?.authMethodId ?? predefined?.authMethodId,
+  private projectMcpServer(): AcpMcpServerConfig | null {
+    if (!this.config.projectMcp) {
+      this.logger?.warn?.(
+        `[AcpDriver] enableProjectMcp is set on "${this.name}" but "projectMcp.path" is missing; skipping.`
+      )
+      return null
     }
+    return buildProjectMcpServer(this.config.projectMcp, this.logger) ?? null
   }
 
   private async createModel(runtimeConfig: AcpAgentRuntimeConfig): Promise<LanguageModel> {
@@ -393,4 +390,10 @@ export function createAcpDriver(
   deps: AcpDriverDeps = {}
 ): AcpDriver {
   return new AcpDriver(name, config, deps)
+}
+
+function requireAbsoluteCwd(providerName: string, cwd: string): void {
+  if (!path.isAbsolute(cwd)) {
+    throw new ProviderConfigError(providerName, `ACP "cwd" must be an absolute path, got "${cwd}"`)
+  }
 }
