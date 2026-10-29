@@ -341,14 +341,14 @@ export class AcpDriver implements AiDriver {
     agentLabel: string
   ): Promise<AcpPermissionResponseLike> {
     const options = params.options ?? []
-    const title = params.toolCall?.title ?? params.toolCall?.kind ?? 'agent action'
+    const title = toolTitle(params)
 
+    if (this.permissionPolicy === 'allow') {
+      return allowOption(options)
+    }
     if (this.permissionPolicy === 'deny') {
       this.logger?.warn?.(`[ACP] Denied "${title}" requested by ${agentLabel} (policy: deny)`)
       return rejectOption(options)
-    }
-    if (this.permissionPolicy === 'allow') {
-      return allowOption(options)
     }
 
     if (!this.confirmation) {
@@ -359,19 +359,33 @@ export class AcpDriver implements AiDriver {
     }
 
     const response = await this.confirmation.waitForResponse(
-      {
-        sessionId: params.sessionId,
-        toolName: `acp:${agentLabel}`,
-        action: String(title),
-        params: {
-          kind: params.toolCall?.kind ?? null,
-          rawInput: params.toolCall?.rawInput ?? null,
-          locations: params.toolCall?.locations ?? null,
-        },
-      },
+      confirmationAction(params, agentLabel, title),
       this.config.permissionTimeoutMs
     )
     return response.status === 'approved' ? allowOption(options) : rejectOption(options)
+  }
+}
+
+/** The tool's title as shown to a human and in logs. */
+function toolTitle(params: AcpPermissionRequestLike): string {
+  return params.toolCall?.title ?? params.toolCall?.kind ?? 'agent action'
+}
+
+/** The confirmation request for an agent permission: the tool's kind, input and locations, for a human to judge. */
+function confirmationAction(
+  params: AcpPermissionRequestLike,
+  agentLabel: string,
+  title: string
+): { sessionId: string | undefined; toolName: string; action: string; params: Record<string, unknown> } {
+  return {
+    sessionId: params.sessionId,
+    toolName: `acp:${agentLabel}`,
+    action: String(title),
+    params: {
+      kind: params.toolCall?.kind ?? null,
+      rawInput: params.toolCall?.rawInput ?? null,
+      locations: params.toolCall?.locations ?? null,
+    },
   }
 }
 
