@@ -14,6 +14,7 @@ import {
 import { classifyError } from './error_classifier.js'
 import { EMPTY_USAGE, normalizeUsage, sumUsage } from './usage.js'
 import { ModelsDevSource, resolveCatalogProviderId } from './catalog/source.js'
+import type { ModelCatalogEntry } from './catalog/models_dev.js'
 import { AgentLoader, type AgentPromptConfig } from './agents/loader.js'
 import { AgentRunner, type AgentRunnerOptions } from './agents/agent_runner.js'
 import type { AcpProviderConfig } from './acp/types.js'
@@ -178,6 +179,38 @@ const SDK_DRIVERS: Record<string, SdkDriverSpec> = {
 
 const PRICING_WAIT_MS = 2_000
 
+/** The models.dev catalog for the manager, configured from the app's catalog settings. */
+function defaultCatalog(config: AiConfig, logger: Logger | undefined): ModelsDevSource {
+  return new ModelsDevSource({
+    logger,
+    cachePath: config.catalog?.cachePath,
+    overridePath: config.catalog?.overridePath,
+    ttlMs: config.catalog?.ttlMs,
+    systemProviders: config.catalog?.systemProviders,
+  })
+}
+
+/** The agent prompt loader for the manager, configured from the app's agent folders. */
+function defaultAgentLoader(config: AiConfig, logger: Logger | undefined): AgentLoader {
+  return new AgentLoader({
+    configsDir: config.agentConfigsDir,
+    skillsDir: config.agentSkillsDir,
+    logger,
+  })
+}
+
+/** Price table by model id and by provider-qualified id, for the models that have a catalog price. */
+function pricingMapOf(models: ModelCatalogEntry[]): Record<string, ModelPricing> {
+  const pricingMap: Record<string, ModelPricing> = {}
+  for (const m of models) {
+    if (m.pricing) {
+      pricingMap[m.id] = m.pricing
+      pricingMap[`${m.providerId}/${m.id}`] = m.pricing
+    }
+  }
+  return pricingMap
+}
+
 /** A tool with no explicit permission is allowed. */
 function toolPermission(permissions: Record<string, ToolPermission> | undefined, name: string): ToolPermission {
   return permissions && Object.hasOwn(permissions, name) ? permissions[name] : 'allow'
@@ -229,37 +262,9 @@ export class AiManager {
       })
     this.toolRegistry = toolRegistry ?? new ToolRegistry({ logger: this.logger })
     this.confirmation = confirmation ?? new ConfirmationService({ logger: this.logger })
-    this.catalog =
-      catalog ??
-      new ModelsDevSource({
-        logger: this.logger,
-        cachePath: config.catalog?.cachePath,
-        overridePath: config.catalog?.overridePath,
-        ttlMs: config.catalog?.ttlMs,
-        systemProviders: config.catalog?.systemProviders,
-      })
-    this.agentLoader =
-      agentLoader ??
-      new AgentLoader({
-        configsDir: config.agentConfigsDir,
-        skillsDir: config.agentSkillsDir,
-        logger: this.logger,
-      })
-
-    // Setup dynamic pricing loader from models.dev catalog
-    if (this.config.catalog?.autoPricing !== false) {
-      this.costTracker.registerPricingLoader(async () => {
-        const models = await this.catalog.listModels()
-        const pricingMap: Record<string, ModelPricing> = {}
-        for (const m of models) {
-          if (m.pricing) {
-            pricingMap[m.id] = m.pricing
-            pricingMap[`${m.providerId}/${m.id}`] = m.pricing
-          }
-        }
-        return pricingMap
-      })
-    }
+    this.catalog = catalog ?? defaultCatalog(config, this.logger)
+    this.agentLoader = agentLoader ?? defaultAgentLoader(config, this.logger)
+    this.registerCatalogPricing()
   }
 
   getConfig(): AiConfig {
@@ -722,6 +727,12 @@ export class AiManager {
       // Cost tracking is non-fatal
       return undefined
     }
+  }
+
+  /** Prices models from the catalog in the background, unless auto-pricing is off. */
+  private registerCatalogPricing(): void {
+    if (this.config.catalog?.autoPricing === false) return
+    this.costTracker.registerPricingLoader(async () => pricingMapOf(await this.catalog.listModels()))
   }
 
   private warnIfOverBudget(agentName: string, totalTokens: number, costUsd?: number): void {
