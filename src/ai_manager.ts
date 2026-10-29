@@ -421,19 +421,8 @@ export class AiManager {
       return this.executeOverChain(request, request.models, operation)
     }
 
-    let targetProvider = request.provider
-    let targetModel = request.model
-
-    // 'provider/model' syntax, but only when the prefix really is a configured provider
-    if (targetModel && targetModel.includes('/') && !targetProvider) {
-      const [head, ...rest] = targetModel.split('/')
-      if (Object.hasOwn(this.config.providers, head)) {
-        targetProvider = head
-        targetModel = rest.join('/')
-      }
-    }
-
-    const primary = targetProvider ?? this.config.default
+    const target = this.resolveTarget(request)
+    const primary = target.provider ?? this.config.default
     const cascade = [primary, ...(this.config.fallbackCascade ?? []).filter((p) => p !== primary)]
 
     const attempts: Array<{ provider: string; model: string; error: Error }> = []
@@ -444,25 +433,12 @@ export class AiManager {
       const pConfig = this.config.providers[providerName]
       if (!pConfig) continue
 
-      const isPrimary = index === 0
-      const modelName = isPrimary
-        ? (targetModel ?? pConfig.defaultModel ?? 'default')
-        : ((this.config.fallbackModels && Object.hasOwn(this.config.fallbackModels, providerName)
-            ? this.config.fallbackModels[providerName]
-            : undefined) ??
-          pConfig.defaultModel ??
-          'default')
+      const modelName = this.modelNameFor(pConfig, providerName, index === 0, target.model)
       const breakerKey = `${providerName}:${modelName}`
 
       if (!this.circuitBreaker.isAvailable(breakerKey)) {
-        this.logger?.warn?.(
-          `[AiManager] Skipping "${breakerKey}" because circuit breaker is OPEN.`
-        )
-        attempts.push({
-          provider: providerName,
-          model: modelName,
-          error: new Error('circuit breaker is open'),
-        })
+        this.logger?.warn?.(`[AiManager] Skipping "${breakerKey}" because circuit breaker is OPEN.`)
+        attempts.push({ provider: providerName, model: modelName, error: new Error('circuit breaker is open') })
         continue
       }
 
@@ -484,19 +460,10 @@ export class AiManager {
         )
         return { result, provider: providerName, model: modelName }
       } catch (err) {
-        const error = err instanceof Error ? err : new Error(String(err))
         const classification = classifyError(err, request.abortSignal)
+        this.assertCanFallBack(err, classification.kind, state, breakerKey)
 
-        if (classification.kind === 'fatal') {
-          throw err
-        }
-        if (state.toolsExecuted) {
-          this.logger?.error?.(
-            `[AiManager] "${breakerKey}" failed after executing tools (${error.message}); not retrying on another provider to avoid repeating side effects.`
-          )
-          throw err
-        }
-
+        const error = err instanceof Error ? err : new Error(String(err))
         attempts.push({ provider: providerName, model: modelName, error })
         this.logger?.warn?.(
           `[AiManager] "${breakerKey}" failed (${classification.reason}: ${error.message}). Attempting next fallback...`
@@ -505,6 +472,51 @@ export class AiManager {
     }
 
     throw new CascadingFallbackError(attempts)
+  }
+
+  /** Splits a `provider/model` string, but only when the prefix really is a configured provider. */
+  private resolveTarget(request: ChainRequest): { provider?: string; model?: string } {
+    const { provider, model } = request
+    if (model && model.includes('/') && !provider) {
+      const [head, ...rest] = model.split('/')
+      if (Object.hasOwn(this.config.providers, head)) {
+        return { provider: head, model: rest.join('/') }
+      }
+    }
+    return { provider, model }
+  }
+
+  /** The primary uses the requested model; a fallback uses its configured fallback model. */
+  private modelNameFor(
+    pConfig: ProviderConfig,
+    providerName: string,
+    isPrimary: boolean,
+    requestedModel: string | undefined
+  ): string {
+    if (isPrimary) return requestedModel ?? pConfig.defaultModel ?? 'default'
+    const fallbackModels = this.config.fallbackModels
+    const configured = fallbackModels && Object.hasOwn(fallbackModels, providerName) ? fallbackModels[providerName] : undefined
+    return configured ?? pConfig.defaultModel ?? 'default'
+  }
+
+  /**
+   * Throws unless a failed attempt may move on: fatal errors end the call, and so does any attempt
+   * that already ran tools, to avoid repeating side effects on another provider.
+   */
+  private assertCanFallBack(
+    err: unknown,
+    kind: string,
+    state: AttemptState,
+    breakerKey: string
+  ): void {
+    if (kind === 'fatal') throw err
+    if (state.toolsExecuted) {
+      const message = err instanceof Error ? err.message : String(err)
+      this.logger?.error?.(
+        `[AiManager] "${breakerKey}" failed after executing tools (${message}); not retrying on another provider to avoid repeating side effects.`
+      )
+      throw err
+    }
   }
 
   /**
