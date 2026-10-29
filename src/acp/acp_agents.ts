@@ -267,94 +267,123 @@ export function buildAcpRuntimeConfig(
   positionalEnvSource?: Record<string, string | undefined>,
   positionalLogger?: Logger
 ): AcpAgentRuntimeConfig | null {
-  // Positional form: getEnv is a function, or explicitly undefined with trailing arguments.
-  const isPositional =
-    typeof optionsOrGetEnv === 'function' ||
-    (optionsOrGetEnv === undefined && arguments.length > 2)
-  const options: AcpRuntimeOptions = isPositional
-    ? {
-        getEnv: optionsOrGetEnv as ((key: string) => string | undefined) | undefined,
-        envSource: positionalEnvSource,
-        logger: positionalLogger,
-      }
-    : ((optionsOrGetEnv as AcpRuntimeOptions | undefined) ?? {})
+  const options = runtimeOptions(optionsOrGetEnv, positionalEnvSource, positionalLogger, arguments.length)
   const getEnv = options.getEnv ?? ((key: string) => process.env[key])
   const envSource = options.envSource ?? process.env
-  const { logger } = options
 
   const config = getAcpAgentConfig(agentId)
   if (!config) return null
 
   const prefix = config.envVarPrefix
 
-  // Build command (allow override via env)
-  const command = getEnv(`${prefix}_PATH`) || config.command
+  return {
+    // Each override (command, args, cwd) comes from the environment when set.
+    command: getEnv(`${prefix}_PATH`) || config.command,
+    args: parseAcpArgs(getEnv(`${prefix}_ARGS`), config.args, options.logger),
+    cwd: path.resolve(getEnv(`${prefix}_CWD`) || process.cwd()),
+    env: {
+      ...credentialsFrom(config, agentId, getEnv),
+      ...customEnvFrom(envSource, prefix),
+    },
+    mcpServers: [
+      ...mcpServersFromEnv(agentId, getEnv(`${prefix}_MCP_SERVERS`), options.logger),
+      ...projectMcpFromEnv(getEnv, prefix, options.projectMcpPath, options.logger),
+    ],
+    authMethodId: config.authMethodId,
+  }
+}
 
-  // Build args (allow override via env)
-  const args = parseAcpArgs(getEnv(`${prefix}_ARGS`), config.args, logger)
+/** Positional form: getEnv is a function, or explicitly undefined with trailing arguments. */
+function runtimeOptions(
+  optionsOrGetEnv: AcpRuntimeOptions | ((key: string) => string | undefined) | undefined,
+  positionalEnvSource: Record<string, string | undefined> | undefined,
+  positionalLogger: Logger | undefined,
+  argCount: number
+): AcpRuntimeOptions {
+  const isPositional =
+    typeof optionsOrGetEnv === 'function' || (optionsOrGetEnv === undefined && argCount > 2)
+  if (isPositional) {
+    return {
+      getEnv: optionsOrGetEnv as ((key: string) => string | undefined) | undefined,
+      envSource: positionalEnvSource,
+      logger: positionalLogger,
+    }
+  }
+  return (optionsOrGetEnv as AcpRuntimeOptions | undefined) ?? {}
+}
 
-  // Build cwd (allow override via env, default to current working directory)
-  const cwd = path.resolve(getEnv(`${prefix}_CWD`) || process.cwd())
-
-  // Build environment variables
+/** The agent's declared credentials: the first source with a value wins. An agent registered without credentialEnv inherits the built-in agent's with the same id. */
+function credentialsFrom(
+  config: AcpAgentConfig,
+  agentId: string,
+  getEnv: (key: string) => string | undefined
+): Record<string, string> {
   const env: Record<string, string> = {}
-
-  // Add the agent's declared credentials: first source that has a value wins
-  // (an agent registered without credentialEnv inherits the built-in agent's with the same id)
   const credentialEnv = config.credentialEnv ?? DEFAULT_ACP_AGENTS[agentId]?.credentialEnv ?? []
   for (const { target, sources } of credentialEnv) {
     const value = sources.map((source) => getEnv(source)).find(Boolean)
     if (value) env[target] = value
   }
+  return env
+}
 
-  // Add custom env vars from ACP_<AGENT>_ENV_* pattern
+/** Custom env vars from the ACP_<AGENT>_ENV_* pattern. */
+function customEnvFrom(
+  envSource: Record<string, string | undefined>,
+  prefix: string
+): Record<string, string> {
+  const env: Record<string, string> = {}
   const envPrefix = `${prefix}_ENV_`
   for (const [key, value] of Object.entries(envSource)) {
     if (key.startsWith(envPrefix) && value !== undefined) {
-      const envKey = key.slice(envPrefix.length)
-      env[envKey] = value
+      env[key.slice(envPrefix.length)] = value
     }
   }
+  return env
+}
 
-  // Parse MCP servers configuration (validated and converted to the ACP schema shape)
-  const mcpServers: AcpMcpServerConfig[] = []
-  const mcpConfigJson = getEnv(`${prefix}_MCP_SERVERS`)
-  if (mcpConfigJson) {
-    try {
-      const parsed = JSON.parse(mcpConfigJson)
-      if (Array.isArray(parsed)) {
-        for (const entry of parsed) {
-          const server = normalizeMcpServer(entry)
-          if (server) mcpServers.push(server)
-          else logger?.warn?.(`[ACP] Ignoring invalid MCP server entry for ${agentId}`)
-        }
-      }
-    } catch {
-      logger?.warn?.(`[ACP] Invalid MCP servers JSON for ${agentId}`)
-    }
+/** MCP servers from ACP_<AGENT>_MCP_SERVERS (a JSON array), validated; invalid entries are dropped with a warning. */
+function mcpServersFromEnv(
+  agentId: string,
+  mcpConfigJson: string | undefined,
+  logger: Logger | undefined
+): AcpMcpServerConfig[] {
+  if (!mcpConfigJson) return []
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(mcpConfigJson)
+  } catch {
+    logger?.warn?.(`[ACP] Invalid MCP servers JSON for ${agentId}`)
+    return []
   }
+  if (!Array.isArray(parsed)) return []
 
-  // Add the project's MCP server if enabled and an explicit path was given
-  if (getEnv(`${prefix}_ENABLE_PROJECT_MCP`) === 'true') {
-    const projectPath = getEnv(`${prefix}_PROJECT_MCP_PATH`) || options.projectMcpPath
-    if (projectPath) {
-      const server = buildProjectMcpServer({ path: projectPath }, logger)
-      if (server) mcpServers.push(server)
-    } else {
-      logger?.warn?.(
-        `[ACP] ${prefix}_ENABLE_PROJECT_MCP is set but ${prefix}_PROJECT_MCP_PATH is not; skipping project MCP.`
-      )
-    }
+  const servers: AcpMcpServerConfig[] = []
+  for (const entry of parsed) {
+    const server = normalizeMcpServer(entry)
+    if (server) servers.push(server)
+    else logger?.warn?.(`[ACP] Ignoring invalid MCP server entry for ${agentId}`)
   }
+  return servers
+}
 
-  return {
-    command,
-    args,
-    cwd,
-    env,
-    mcpServers,
-    authMethodId: config.authMethodId,
+/** The project MCP server, when ACP_<AGENT>_ENABLE_PROJECT_MCP is "true" and a path is known. */
+function projectMcpFromEnv(
+  getEnv: (key: string) => string | undefined,
+  prefix: string,
+  fallbackPath: string | undefined,
+  logger: Logger | undefined
+): AcpMcpServerConfig[] {
+  if (getEnv(`${prefix}_ENABLE_PROJECT_MCP`) !== 'true') return []
+  const projectPath = getEnv(`${prefix}_PROJECT_MCP_PATH`) || fallbackPath
+  if (!projectPath) {
+    logger?.warn?.(
+      `[ACP] ${prefix}_ENABLE_PROJECT_MCP is set but ${prefix}_PROJECT_MCP_PATH is not; skipping project MCP.`
+    )
+    return []
   }
+  const server = buildProjectMcpServer({ path: projectPath }, logger)
+  return server ? [server] : []
 }
 
 /**
