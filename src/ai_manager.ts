@@ -27,6 +27,7 @@ import {
 import type {
   AiConfig,
   AiDriver,
+  BaseProviderConfig,
   ChatMessage,
   GenerateObjectOptions,
   GenerateObjectResult,
@@ -95,6 +96,85 @@ function toChainCandidates(models: Array<ResolvedModel | string>): ChainCandidat
 
 type ModelFactory = (modelId: string) => LanguageModel
 type ClientFactory = (settings: Record<string, unknown>) => ModelFactory
+
+/** How one built-in SDK driver loads its package and builds its client. */
+interface SdkDriverSpec {
+  /** Name used in the missing-package error. */
+  label: string
+  pkg: string
+  factory: string
+  defaultModel: string
+  settings: (config: SdkDriverConfig) => Record<string, unknown>
+}
+
+type SdkDriverConfig = Pick<BaseProviderConfig, 'baseURL' | 'headers'> & {
+  apiKey?: string
+  organization?: string
+}
+
+const GOOGLE_DRIVER: SdkDriverSpec = {
+  label: 'Google/Gemini',
+  pkg: '@ai-sdk/google',
+  factory: 'createGoogleGenerativeAI',
+  defaultModel: 'gemini-3.5-flash',
+  settings: (c) => ({
+    apiKey: c.apiKey ?? process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY,
+    baseURL: c.baseURL,
+    headers: c.headers,
+  }),
+}
+
+/** Built-in SDK drivers, keyed by the `driver` value in provider config. */
+const SDK_DRIVERS: Record<string, SdkDriverSpec> = {
+  openai: {
+    label: 'OpenAI',
+    pkg: '@ai-sdk/openai',
+    factory: 'createOpenAI',
+    defaultModel: 'gpt-6-sol',
+    settings: (c) => ({
+      apiKey: c.apiKey ?? process.env.OPENAI_API_KEY,
+      organization: c.organization ?? process.env.OPENAI_ORG_ID,
+      baseURL: c.baseURL ?? process.env.OPENAI_BASE_URL,
+      headers: c.headers,
+    }),
+  },
+  anthropic: {
+    label: 'Anthropic',
+    pkg: '@ai-sdk/anthropic',
+    factory: 'createAnthropic',
+    defaultModel: 'claude-sonnet-5-5',
+    settings: (c) => ({
+      apiKey: c.apiKey ?? process.env.ANTHROPIC_API_KEY,
+      baseURL: c.baseURL ?? process.env.ANTHROPIC_BASE_URL,
+      headers: c.headers,
+    }),
+  },
+  google: GOOGLE_DRIVER,
+  gemini: GOOGLE_DRIVER,
+  groq: {
+    label: 'Groq',
+    pkg: '@ai-sdk/groq',
+    factory: 'createGroq',
+    defaultModel: 'openai/gpt-oss-120b',
+    settings: (c) => ({
+      apiKey: c.apiKey ?? process.env.GROQ_API_KEY,
+      baseURL: c.baseURL,
+      headers: c.headers,
+    }),
+  },
+  ollama: {
+    label: 'Ollama',
+    pkg: '@ai-sdk/openai-compatible',
+    factory: 'createOpenAICompatible',
+    defaultModel: 'llama3.2',
+    settings: (c) => ({
+      name: 'ollama',
+      baseURL: c.baseURL ?? process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434/v1',
+      headers: c.headers,
+    }),
+  },
+}
+
 
 const PRICING_WAIT_MS = 2_000
 
@@ -904,100 +984,6 @@ export class AiManager {
    */
   private async createDriver(name: string, config: ProviderConfig): Promise<AiDriver> {
     switch (config.driver) {
-      case 'openai': {
-        const { createOpenAI } = await this.safeImport<{ createOpenAI: ClientFactory }>(
-          '@ai-sdk/openai',
-          'OpenAI driver requires package "@ai-sdk/openai"'
-        )
-        const client = createOpenAI({
-          apiKey: config.apiKey ?? process.env.OPENAI_API_KEY,
-          organization: config.organization ?? process.env.OPENAI_ORG_ID,
-          baseURL: config.baseURL ?? process.env.OPENAI_BASE_URL,
-          headers: config.headers,
-        })
-        const defaultModel = config.defaultModel ?? 'gpt-6-sol'
-        return {
-          name,
-          defaultModel,
-          getModel: (m) => client(m ?? defaultModel),
-        }
-      }
-
-      case 'anthropic': {
-        const { createAnthropic } = await this.safeImport<{ createAnthropic: ClientFactory }>(
-          '@ai-sdk/anthropic',
-          'Anthropic driver requires package "@ai-sdk/anthropic"'
-        )
-        const client = createAnthropic({
-          apiKey: config.apiKey ?? process.env.ANTHROPIC_API_KEY,
-          baseURL: config.baseURL ?? process.env.ANTHROPIC_BASE_URL,
-          headers: config.headers,
-        })
-        const defaultModel = config.defaultModel ?? 'claude-sonnet-5-5'
-        return {
-          name,
-          defaultModel,
-          getModel: (m) => client(m ?? defaultModel),
-        }
-      }
-
-      case 'google':
-      case 'gemini': {
-        const { createGoogleGenerativeAI } = await this.safeImport<{
-          createGoogleGenerativeAI: ClientFactory
-        }>('@ai-sdk/google', 'Google/Gemini driver requires package "@ai-sdk/google"')
-        const client = createGoogleGenerativeAI({
-          apiKey: config.apiKey ?? process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY,
-          baseURL: config.baseURL,
-          headers: config.headers,
-        })
-        const defaultModel = config.defaultModel ?? 'gemini-3.5-flash'
-        return {
-          name,
-          defaultModel,
-          getModel: (m) => client(m ?? defaultModel),
-        }
-      }
-
-      case 'groq': {
-        const { createGroq } = await this.safeImport<{ createGroq: ClientFactory }>(
-          '@ai-sdk/groq',
-          'Groq driver requires package "@ai-sdk/groq"'
-        )
-        const client = createGroq({
-          apiKey: config.apiKey ?? process.env.GROQ_API_KEY,
-          baseURL: config.baseURL,
-          headers: config.headers,
-        })
-        const defaultModel = config.defaultModel ?? 'openai/gpt-oss-120b'
-        return {
-          name,
-          defaultModel,
-          getModel: (m) => client(m ?? defaultModel),
-        }
-      }
-
-      case 'ollama': {
-        const { createOpenAICompatible } = await this.safeImport<{
-          createOpenAICompatible: ClientFactory
-        }>(
-          '@ai-sdk/openai-compatible',
-          'Ollama driver requires package "@ai-sdk/openai-compatible"'
-        )
-        const baseURL = config.baseURL ?? process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434/v1'
-        const client = createOpenAICompatible({
-          name: 'ollama',
-          baseURL,
-          headers: config.headers,
-        })
-        const defaultModel = config.defaultModel ?? 'llama3.2'
-        return {
-          name,
-          defaultModel,
-          getModel: (m) => client(m ?? defaultModel),
-        }
-      }
-
       case 'acp': {
         const { createAcpDriver } = await import('./acp/provider.js')
         return createAcpDriver(name, config as AcpProviderConfig, {
@@ -1018,9 +1004,27 @@ export class AiManager {
       }
 
       default: {
-        const unsupported = config as { driver?: string }
-        throw new ProviderConfigError(name, `Unsupported driver type: "${unsupported.driver}"`)
+        const spec = Object.hasOwn(SDK_DRIVERS, config.driver) ? SDK_DRIVERS[config.driver] : undefined
+        if (!spec) {
+          throw new ProviderConfigError(name, `Unsupported driver type: "${config.driver}"`)
+        }
+        return this.sdkDriver(name, spec, config)
       }
+    }
+  }
+
+  /** Loads a built-in SDK package, builds its client, and wraps it as a driver. */
+  private async sdkDriver(name: string, spec: SdkDriverSpec, config: ProviderConfig): Promise<AiDriver> {
+    const sdk = await this.safeImport<Record<string, ClientFactory>>(
+      spec.pkg,
+      `${spec.label} driver requires package "${spec.pkg}"`
+    )
+    const client = sdk[spec.factory](spec.settings(config))
+    const defaultModel = config.defaultModel ?? spec.defaultModel
+    return {
+      name,
+      defaultModel,
+      getModel: (m) => client(m ?? defaultModel),
     }
   }
 
