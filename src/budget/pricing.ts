@@ -19,12 +19,12 @@ export const DEFAULT_MODEL_PRICING: Readonly<Record<string, ModelPricing>> = Obj
   'o3': { input: 2.0, output: 8.0, cacheReadCostPer1M: 0.5 },
   'o3-mini': { input: 1.1, output: 4.4, cacheReadCostPer1M: 0.55 },
   'o4-mini': { input: 1.1, output: 4.4, cacheReadCostPer1M: 0.275 },
-  'gpt-6-sol': { input: 2.0, output: 10.0, cacheReadCostPer1M: 0.2 },
-  'gpt-6-astra': { input: 10.0, output: 50.0, cacheReadCostPer1M: 1.0 },
-  'gpt-6-luna': { input: 0.1, output: 0.5, cacheReadCostPer1M: 0.01 },
-  'gpt-5.6-sol': { input: 4.0, output: 20.0, cacheReadCostPer1M: 0.4 },
-  'gpt-5.6-terra': { input: 2.0, output: 12.0, cacheReadCostPer1M: 0.2 },
-  'gpt-5.6-luna': { input: 0.2, output: 1.2, cacheReadCostPer1M: 0.02 },
+  'gpt-6-sol': { input: 2.0, output: 10.0, cacheReadCostPer1M: 0.2, cacheWriteCostPer1M: 2.5 },
+  'gpt-6-astra': { input: 10.0, output: 50.0, cacheReadCostPer1M: 1.0, cacheWriteCostPer1M: 12.5 },
+  'gpt-6-luna': { input: 0.1, output: 0.5, cacheReadCostPer1M: 0.01, cacheWriteCostPer1M: 0.125 },
+  'gpt-5.6-sol': { input: 4.0, output: 20.0, cacheReadCostPer1M: 0.4, cacheWriteCostPer1M: 5.0 },
+  'gpt-5.6-terra': { input: 2.0, output: 12.0, cacheReadCostPer1M: 0.2, cacheWriteCostPer1M: 2.5 },
+  'gpt-5.6-luna': { input: 0.2, output: 1.2, cacheReadCostPer1M: 0.02, cacheWriteCostPer1M: 0.25 },
 
   // Anthropic (cache read = 0.1x input, 5-minute cache write = 1.25x input)
   'claude-fable-5-1': { input: 10.0, output: 50.0, cacheReadCostPer1M: 0.25, cacheWriteCostPer1M: 12.5 },
