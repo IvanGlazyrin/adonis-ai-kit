@@ -26,11 +26,11 @@
 
 Первая версия сравнения (в чате) была сделана по обрезанной docs. Исходники это поправили:
 
-1. **Ошибки tools возвращаются модели — уже стандарт в laravel/ai.** Коммит `073cd73f` «Let agents recover from
+1. **Ошибки tools возвращаются модели — стандарт и в laravel/ai, и у нас.** Коммит `073cd73f` «Let agents recover from
    tool failures (#1191)»: «Recover from tool failures by default instead of behind an attribute».
-   У нас `error_classifier` распознаёт `AI_NoSuchToolError` и `AI_InvalidToolInputError`
-   (`adonis:src/error_classifier.ts:44-45`), но обратно в цикл модели ничего не передаётся. Это разрыв, а не
-   «фича Laravel».
+   Наш `error_classifier` распознаёт `AI_NoSuchToolError` и `AI_InvalidToolInputError`
+   (`adonis:src/error_classifier.ts:44-45`), но сам возврат ошибки модели делает AI SDK (`tool-error`-part),
+   так что разрыва здесь нет (аудит optimus-grid, см. ниже). Остаётся только repair со списком имён (B2).
 2. **Fakes есть для всех модальностей, а не только для агентов.** `laravel:src/Concerns/InteractsWithFake*.php`
    (Agents, Audio, Classification, Embeddings, Files, Images, Reranking, Stores, Transcriptions) и
    `laravel:src/Gateway/Fake*Gateway.php`.
@@ -63,15 +63,20 @@
 - **Реализация:** опереться на `prepareStep` в Vercel AI SDK (имя проверить через context7).
 - **Цена:** низкая.
 
-### B2. Ошибки tools возвращаются модели — P1
+### B2. Repair неизвестного tool со списком допустимых имён — P3 (сужено после аудита)
 
-- **У них:** стандарт по умолчанию, `073cd73f` (#1191). Отдельно `#[RepairToolCalls]`
+- **У них:** стандарт возврата ошибок tools модели — `073cd73f` (#1191). Отдельно `#[RepairToolCalls]`
   (`laravel:src/Attributes/RepairToolCalls.php`, `laravel:src/Gateway/TextGenerationLoop.php:580,603`):
   неизвестный tool возвращается модели со списком допустимых имён и даёт дополнительный шаг.
-- **У нас:** разрыв (см. корректировку 1).
-- **Почему лучше:** модель сама исправляет вызов, не нужен отдельный запрос к пользователю.
-- **Реализация:** перехватить `NoSuchToolError` / `InvalidToolInputError` внутри tool-loop и вернуть их
-  как tool-result с ошибкой. Для `RepairToolCalls`-поведения проверить `experimental_repairToolCall`.
+- **У нас:** возврат ошибок модели уже работает. `ai@7.0.148` (kit) и `ai@7.0.137` (optimus) при неизвестном tool
+  и невалидном input вызывают `parseToolCall` (`node_modules/ai/dist/index.js:4138-4154`), который отдаёт
+  `tool-error`-part; он попадает в сообщения модели (`generateText` ~5780-5788, `streamText` ~8420,
+  `toResponseMessages` ~4966). Отсутствует только repair со списком допустимых имён: опция `repairToolCall`
+  (`index.d.ts:3842, 5379`) вызывается только на `NoSuchToolError`/`InvalidToolInputError` (`index.js:4100`).
+  Ссылки на `index.js:2856/2880` в первой версии неверны (это ошибки tools, выполненные провайдером).
+- **Почему полезно:** модель сама исправляет вызов. Но выигрыш меньше, чем считалось в первой версии спеки.
+- **Реализация:** опция `repairToolCall` в `generateText`/`streamText` (имя проверить через context7, аудит
+  подтверждает, что в текущей документации AI SDK она без префикса `experimental_`).
 - **Цена:** низкая.
 
 ### B3. Маркеры кэша промптов с TTL — P1
@@ -90,7 +95,8 @@
 
 - **У них:** `laravel:src/Concerns/InteractsWithFake*.php` для всех модальностей.
 - **У нас:** для пользователя `adonis-ai-kit` нет подменяемого провайдера. Тесты приложения ходят в сеть
-  или мокают внутренности.
+  или мокают внутренности. В `optimus-grid` есть ad hoc DI-сиды (`app/services/llm/llm_model_tester.ts:44-60`,
+  `tests/unit/llm/fallback_llm_service.spec.ts`), переиспользуемого fake в kit нет (аудит).
 - **Почему лучше:** это главный барьер для adoption библиотеки. Тесты приложения не должны зависеть от сети и ключей.
 - **Реализация:** `ai.fake(responses)` с ассертами на вызовы и промпты. Минимальная версия — только текст и
   агенты, остальное по мере надобности.
@@ -126,7 +132,8 @@
   `sessionId` (`:146`) только привязывает approve/reject.
 - **Почему лучше:** HITL — главная фича guard-модуля. Сейчас она работает только для быстрых ответов в
   одном процессе.
-- **Реализация:** порт персистентности для pending-действия и состояния run'а. Требует B8 (история).
+- **Реализация:** проектировать от `toolApproval` и `experimental_toolApprovalSecret` из `ai` 7
+  (`index.d.ts:3826`), а не с нуля. Персистентность pending-действия и состояния run'а — отдельная задача. Требует B8.
 - **Цена:** высокая.
 
 ### B8. Хранилище диалогов — P3
@@ -152,14 +159,16 @@
   чем opt-in модель approval у них.
 - **Цена:** средняя.
 
-### B10. Failover с явными классами ошибок — P2 (после проверки)
+### B10. Failover с классами ошибок и событиями — уже есть, снято с плана (после аудита)
 
 - **У них:** типизированный маркер `FailoverableException` и события `ProviderFailedOver`/`AgentFailedOver`.
-- **У нас:** `adonis:src/error_classifier.ts` классифицирует ошибки по `errorClass` и `countsAsFailure`,
-  breaker по `provider:model` в `adonis:src/circuit_breaker.ts`. Это уже сильнее, чем в явной модели.
-- **Что взять:** события failover для наблюдаемости. Типизированный маркер — только если нужен для
-  пользователей библиотеки.
-- **Сначала:** проверить их non-stream failover на повтор tools (см. «Открытые вопросы»).
+- **У нас:** уже есть. `adonis:src/ai_manager.ts:639` (`onFallback`), `adonis:src/models/model_chain.ts:88, 151`,
+  `adonis:src/error_classifier.ts` (`errorClass`, `countsAsFailure`), breaker по `provider:model` в
+  `adonis:src/circuit_breaker.ts`. `optimus-grid` потребляет событие: `app/services/llm/fallback_llm_service.ts:16-22`
+  (`FallbackEvent`), `app/agents/orchestration/phases/agent_runner.ts:154-173`.
+- **Что осталось:** типизированный маркер для пользователей библиотеки — только если понадобится. Для наблюдаемости ничего не нужно.
+- **Сначала:** проверить их non-stream failover на повтор tools (см. «Открытые вопросы»). Это по-прежнему
+  не проверено, поэтому в README нельзя писать «у них повторяются side-effects».
 
 ## Не заимствуем
 
@@ -188,12 +197,95 @@
 
 Перед публикацией на npm эту таблицу проверить и переписать.
 
+## Аудит optimus-grid (2026-10-29)
+
+`optimus-grid` зависит от `adonis-ai-kit ^1.2.1` из npm (`optimus-grid/package.json:112`), собственных копий ядра
+нет. Его `app/services/llm/*`, `app/agents/orchestration/{budget,cost,confirmation}*.ts` и
+`app/agents/tools/registry.ts` — адаптеры над kit. Значит, перенос в kit позволяет удалить код из optimus.
+
+Статусы B1–B10 в optimus-grid: B1, B5, B6, B8, B9 — отсутствуют. B2 и B4 — частично. B3 — только учёт
+cache-read, маркеров нет. B7 — HITL есть, но только в памяти (`execution_phase.ts:136-148`, таймаут 300_000).
+B10 — реализован (см. выше).
+
+Кандидаты на перенос в kit, по приоритету:
+
+1. **Восстановление JSON из `NoObjectGeneratedError`.** `optimus-grid/app/utils/llm_response_parser.ts` (38 строк),
+   вызов в `app/agents/orchestration/phases/agent_runner.ts:269-301`. В kit нет. **Не переносить как есть**
+   (см. вторую проверку): парсер ломается на скобках внутри строк, не принимает массивы верхнего уровня и
+   записывает 0 токенов. Переписать через `extractJsonMiddleware` из `ai` 7 (`index.d.ts:9575`).
+2. **Тестовые fakes.** Основа для B4: инъекция `generateText` из `app/services/llm/llm_model_tester.ts:44-60`.
+   Цена: низкая–средняя.
+3. **Тестер моделей и лимитер.** `app/services/llm/llm_model_tester.ts` (146 строк),
+   `app/services/llm/llm_model_test_rate_limiter.ts` (74). Перекрытие с `commands/ai_test.ts` в kit не проверено.
+   Цена: средняя.
+4. **Token bucket.** Ядро `app/services/bybit_rate_limiter.ts` (206 строк), переносить только общее ядро без
+   категорий Bybit. Цена: низкая.
+5. **Shared data bus для агентов.** `app/agents/orchestration/shared_data_bus.ts` (50 строк), метод
+   `toContextString`. Цена: низкая.
+6. **Хуки жизненного цикла агентов.** `app/agents/orchestration/hooks_engine.ts` (210 строк). Исполняет shell-команды,
+   переносить только после ревью безопасности. Цена: средняя.
+7. ~~Дубликат обёртки tools в optimus~~ — снято. Удалить `wrapToolsForExecution` в optimus нельзя без миграции
+   на `AiManager`, которого там нет (см. вторую проверку).
+8. **Hot-reload конфигов агентов.** `providers/runtime_services_provider.ts:300-312`. Слабая ценность.
+
+Не относится к библиотеке: доменная часть трейдинга (`app/agents/tools/bybit_tools.ts`, `regime_detector.ts`,
+`app/services/grid*`, `campaign`, `experiment`, `autopsy`, `system_one`), логгер транскриптов, mutex по группам
+провайдеров (`app/utils/provider_group_lock.ts`).
+
+Не проверено: поведение `ai` без `repairToolCall` в стриминге; перекрытие `llm_model_tester` с `commands/ai_test.ts`;
+зависит ли kit от `jsonschema`. Сверка исходников по байтам невозможна: в `.js.map` нет `sourcesContent`.
+
+## Вторая проверка (Opus, 2026-10-29)
+
+Независимая перепроверка выводов. Большинство подтвердилось. Ниже — что изменилось.
+
+**Главное: `optimus-grid` не использует `AiManager`.** `app/services/llm/llm_service_impl.ts:1` импортирует
+`generateText`/`streamText` из `ai` напрямую; `AiManager` в `app/`, `start/`, `providers/` не найден. Значит:
+- B1 и B3, реализованные в kit, до optimus сами по себе не дойдут. Нужна либо миграция optimus на `AiManager`,
+  либо правка `llm_service_impl.ts`.
+- «Копий ядра нет» верно только для breaker, classifier, budget, guard и catalog. Генерация у optimus своя.
+
+**Безопасность fallback (B10 и README) — не доказана полностью.**
+- `model_chain.ts:198` проверяет `!toolsExecuted`. Но `markToolsExecuted` срабатывает только для локальных
+  tools с `execute` (`ai_manager.ts:671-681`). Tools, которые выполняет провайдер, не отмечаются.
+- В optimus это закрыто второй проверкой по `step.toolCalls` в `onStepFinish` (`fallback_llm_service.ts:104-107`).
+  В kit такой проверки нет.
+- ACP-драйверы могут стоять в `fallbackCascade`. ACP выполняет свои tools сам, и отметки `toolsExecuted` там не
+  найдено. Это вероятный путь повтора side-effects (полный путь ACP не трассировался).
+- Вывод: до закрытия этих путей в README нельзя писать «never replays side-effects» без оговорок.
+
+**«Fail-closed» верен только для реестра.** `AiManager.prepareTools` по умолчанию ставит `'allow'`
+(`ai_manager.ts:226-227`, по данным проверки). Значит, B9 (MCP) должен идти только через `ToolRegistry`.
+
+**В `ai@7` уже есть примитивы, которые спека не учла:**
+- `prepareStep` и `activeTools` — закрывают B1.
+- `extractJsonMiddleware({ transform })` (`index.d.ts:9575`) — заменяет самописный парсер JSON; `transform` позволяет
+  подставить свой экстрактор.
+- `toolApproval` и `experimental_toolApprovalSecret` (`index.d.ts:3826`) — основа для B7, проектировать от них.
+- `onToolExecutionStart` — может заменить `trackExecution`.
+- `pruneMessages` и `toolSearch` — относятся к B5 и B8.
+
+**Изъяны парсера JSON в optimus:** скобки внутри строк ломают подсчёт глубины; массивы верхнего уровня не
+поддерживаются; после первой ошибки `JSON.parse` дальше не ищет; восстановление пишет 0 токенов, хотя
+`NoObjectGeneratedError` содержит `usage` (`index.js:188`).
+
+**Пересмотр кандидатов:**
+- Token bucket — лимитер для Bybit API, к AI-ядру не относится. Снять.
+- Тестер моделей — переносить только очистку ошибок и программный `testModel` без fallback.
+- Shared data bus и hooks engine — отложить.
+- Пункт про удаление обёртки в optimus — снят (см. выше).
+
 ## Порядок работ
 
-1. **Фаза 1 (дёшево, опираясь на существующий код):** B1, B2, B3, B4, исправление README.
-2. **Фаза 2:** B5, B6, B10 (события failover).
-3. **Фаза 3:** B8 (хранилище диалогов), затем B7 (resumable approvals) — в одном плане.
-4. **Фаза 4:** B9 (MCP через реестр).
+1. **Фаза 1 (дёшево, опираясь на примитивы `ai` 7):** B1 через `prepareStep`/`activeTools`, B3 через
+   `providerOptions`, B4 (fakes с DI), JSON-восстановление через `extractJsonMiddleware`, исправление README.
+   Учесть, что B1 и B3 не дойдут до optimus без миграции на `AiManager` или правки `llm_service_impl.ts`.
+   B2 — только если останется время (P3).
+2. **Фаза 1a (до любых заявлений о безопасности):** закрыть повтор side-effects — проверка по `step.toolCalls`
+   в kit и путь ACP.
+3. **Фаза 2:** B5, B6, очистка ошибок из тестера моделей.
+4. **Фаза 3:** B8 (хранилище диалогов), затем B7 (resumable approvals) — в одном плане, от `toolApproval` из `ai` 7.
+5. **Фаза 4:** B9 (MCP через `ToolRegistry`, не через `AiManager.prepareTools` с его `'allow'` по умолчанию).
 
 ## Открытые вопросы
 
