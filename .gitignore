@@ -8,3 +8,4 @@ yarn-error.log*
 .npmrc
 *.tgz
 dist/
+docs/superpowers/specs/
