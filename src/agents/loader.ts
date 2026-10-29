@@ -7,6 +7,30 @@ import { agentManifestSchema, type AgentManifest, type ToolPermission } from './
 
 const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 
+interface AppPaths {
+  makePath(relative: string): string
+}
+
+/** The AdonisJS app service, or `null` when this code runs outside an AdonisJS process. */
+async function loadAdonisApp(): Promise<AppPaths | null> {
+  try {
+    const { default: app } = await import('@adonisjs/core/services/app')
+    return app
+  } catch {
+    return null
+  }
+}
+
+/** A default folder under the app root, or under the working directory when no app is available. */
+function defaultDir(app: AppPaths | null, relative: string): string {
+  try {
+    if (app) return app.makePath(relative)
+  } catch {
+    // the app is not booted: use the working directory instead
+  }
+  return path.resolve(process.cwd(), relative)
+}
+
 /** Strips a UTF-8 BOM and normalizes line endings so the frontmatter regex always matches. */
 function normalizeContent(content: string): string {
   return content.replace(/^\u{FEFF}/u, '').replace(/\r\n/g, '\n')
@@ -87,19 +111,11 @@ export class AgentLoader {
       return { configsDir, skillsDir }
     }
 
-    let defaultConfigs = configsDir
-    let defaultSkills = skillsDir
-
-    try {
-      const { default: app } = await import('@adonisjs/core/services/app')
-      if (!defaultConfigs) defaultConfigs = app.makePath('resources/agent-configs')
-      if (!defaultSkills) defaultSkills = app.makePath('resources/agent-skills')
-    } catch {
-      if (!defaultConfigs) defaultConfigs = path.resolve(process.cwd(), 'resources', 'agent-configs')
-      if (!defaultSkills) defaultSkills = path.resolve(process.cwd(), 'resources', 'agent-skills')
+    const app = await loadAdonisApp()
+    return {
+      configsDir: configsDir || defaultDir(app, 'resources/agent-configs'),
+      skillsDir: skillsDir || defaultDir(app, 'resources/agent-skills'),
     }
-
-    return { configsDir: defaultConfigs, skillsDir: defaultSkills }
   }
 
   /**
