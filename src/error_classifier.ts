@@ -101,20 +101,53 @@ export type ErrorClass =
   | 'no_output_generated' // AI SDK: model produced no output (transient)
   | 'unknown'
 
+/** Statuses with one class each; 400 and 5xx are decided by the message or the range. */
+const CLASS_BY_EXACT_STATUS: Record<number, ErrorClass> = {
+  429: 'rate_limit',
+  529: 'overloaded',
+  409: 'overloaded',
+  425: 'overloaded',
+  408: 'timeout',
+  401: 'auth_error',
+  403: 'auth_error',
+  404: 'model_not_found',
+}
+
+const PROMPT_TOO_LONG_STATUS_HINTS = ['too long', 'max_tokens', 'context length']
+
 function classByStatusCode(status: number, message: string): ErrorClass {
-  if (status === 429) return 'rate_limit'
-  if (status === 529 || status === 409 || status === 425) return 'overloaded'
-  if (status === 408) return 'timeout'
-  if (status === 401 || status === 403) return 'auth_error'
-  if (status === 404) return 'model_not_found'
+  const exact = CLASS_BY_EXACT_STATUS[status]
+  if (exact) return exact
   if (status === 400) {
-    if (message.includes('too long') || message.includes('max_tokens') || message.includes('context length')) {
-      return 'prompt_too_long'
-    }
-    return 'invalid_request'
+    return PROMPT_TOO_LONG_STATUS_HINTS.some((hint) => message.includes(hint))
+      ? 'prompt_too_long'
+      : 'invalid_request'
   }
   if (status >= 500) return 'server_error'
   return 'unknown'
+}
+
+const NO_OUTPUT_ERROR_NAMES: ReadonlySet<unknown> = new Set([
+  'AI_NoOutputGeneratedError',
+  'NoOutputGeneratedError',
+])
+
+/** The AI SDK reports no output; the message may still carry the upstream status. */
+function classifyNoOutput(message: string): ErrorClass {
+  if (message.includes('403') || message.includes('401')) return 'auth_error'
+  if (message.includes('429')) return 'rate_limit'
+  if (message.includes('500') || message.includes('502') || message.includes('503')) return 'server_error'
+  return 'no_output_generated'
+}
+
+/** Network and timeout hints in the message, for errors that carry no status or code. */
+function classifyByMessage(message: string): ErrorClass | undefined {
+  if (message.includes('fetch failed') || message.includes('ECONNREFUSED') || message.includes('ENOTFOUND')) {
+    return 'network_error'
+  }
+  if (message.includes('timeout') || message.includes('ETIMEDOUT')) return 'timeout'
+  if (message.includes('too long') || message.includes('context length')) return 'prompt_too_long'
+  return undefined
 }
 
 /**
@@ -128,25 +161,13 @@ export function classifyErrorClass(error: unknown): ErrorClass {
 
   const status = statusOf(error)
   if (status !== undefined) return classByStatusCode(status, message)
-
-  if (name === 'AI_NoOutputGeneratedError' || name === 'NoOutputGeneratedError') {
-    if (message.includes('403') || message.includes('401')) return 'auth_error'
-    if (message.includes('429')) return 'rate_limit'
-    if (message.includes('500') || message.includes('502') || message.includes('503')) return 'server_error'
-    return 'no_output_generated'
-  }
+  if (NO_OUTPUT_ERROR_NAMES.has(name)) return classifyNoOutput(message)
   if (name === 'TimeoutError') return 'timeout'
 
   const code = codeOf(error)
   if (code && NETWORK_CODES.has(code)) return 'network_error'
 
-  if (message.includes('fetch failed') || message.includes('ECONNREFUSED') || message.includes('ENOTFOUND')) {
-    return 'network_error'
-  }
-  if (message.includes('timeout') || message.includes('ETIMEDOUT')) return 'timeout'
-  if (message.includes('too long') || message.includes('context length')) return 'prompt_too_long'
-
-  return 'unknown'
+  return classifyByMessage(message) ?? 'unknown'
 }
 
 const RETRYABLE_ERROR_CLASSES: ReadonlySet<ErrorClass> = new Set([
