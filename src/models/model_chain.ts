@@ -94,13 +94,8 @@ export async function runModelChain<T>(
   options: ModelChainOptions = {}
 ): Promise<{ result: T; model: ResolvedModel; key: string }> {
   const { breaker, resolver, abortSignal, logger } = options
-  const unresolved = candidates.find((c) => c.kind === 'ref')
-  if (unresolved && !resolver) {
-    throw new ProviderConfigError(
-      'model-chain',
-      `a resolver is required to resolve "${(unresolved as { ref: string }).ref}"`
-    )
-  }
+  assertResolverPresent(candidates, resolver)
+
   let lastError: unknown
   let hasError = false
   let attempted = 0
@@ -120,13 +115,7 @@ export async function runModelChain<T>(
     }
 
     try {
-      let model: ResolvedModel
-      if (candidate.kind === 'resolved') {
-        model = candidate.model
-      } else {
-        model = await resolver!.resolve(candidate.ref)
-      }
-
+      const model = await resolveCandidate(candidate, resolver)
       attempted++
       let toolsExecuted = false
       try {
@@ -144,8 +133,7 @@ export async function runModelChain<T>(
         lastError = error
         hasError = true
         const classification = classifyError(error, abortSignal)
-        if (classification.countsAsFailure) permit?.failure(error)
-        else permit?.release()
+        settlePermitAfterFailure(permit, classification.countsAsFailure, error)
 
         const next = nextAvailable(candidates, i + 1, breaker)
         const canFallBack = classification.kind === 'retryable' || classification.kind === 'skip'
@@ -160,21 +148,12 @@ export async function runModelChain<T>(
         logger?.warn(
           `[model-chain] ${candidate.key} failed with ${classification.errorClass}; falling back to ${next.key}`
         )
-        try {
-          const pending = options.onFallback?.({
-            fromModel: candidate.key,
-            toModel: next.key,
-            error,
-            errorClass: classification.errorClass,
-          })
-          if (pending && typeof (pending as PromiseLike<void>).then === 'function') {
-            Promise.resolve(pending).catch((handlerError) => {
-              logger?.warn(`[model-chain] onFallback handler rejected: ${String(handlerError)}`)
-            })
-          }
-        } catch (handlerError) {
-          logger?.warn(`[model-chain] onFallback handler threw: ${String(handlerError)}`)
-        }
+        notifyFallback(options.onFallback, logger, {
+          fromModel: candidate.key,
+          toModel: next.key,
+          error,
+          errorClass: classification.errorClass,
+        })
       }
     } finally {
       // Safety net for every exit path; a no-op once the permit has been settled.
@@ -184,6 +163,45 @@ export async function runModelChain<T>(
 
   if (hasError) throw lastError
   throw new ProviderUnavailableError('model-chain', 'no candidate model is available')
+}
+
+/** A ref candidate needs a resolver; a configuration error is raised before any attempt. */
+function assertResolverPresent(candidates: ChainCandidate[], resolver?: ModelResolver): void {
+  const unresolved = candidates.find((c): c is { kind: 'ref'; ref: string; key: string } => c.kind === 'ref')
+  if (unresolved && !resolver) {
+    throw new ProviderConfigError('model-chain', `a resolver is required to resolve "${unresolved.ref}"`)
+  }
+}
+
+function resolveCandidate(candidate: ChainCandidate, resolver?: ModelResolver): Promise<ResolvedModel> {
+  return candidate.kind === 'resolved' ? Promise.resolve(candidate.model) : resolver!.resolve(candidate.ref)
+}
+
+/** A failure the breaker counts is recorded on the permit; any other failure gives the permit back. */
+function settlePermitAfterFailure(permit: BreakerPermit | null, countsAsFailure: boolean, error: unknown): void {
+  if (countsAsFailure) permit?.failure(error)
+  else permit?.release()
+}
+
+/**
+ * Hands a fallback to the caller's handler. A throwing or rejecting handler is logged and never
+ * changes the outcome of the chain.
+ */
+function notifyFallback(
+  handler: ModelChainOptions['onFallback'],
+  logger: Logger | undefined,
+  event: FallbackEvent
+): void {
+  try {
+    const pending = handler?.(event)
+    if (pending && typeof (pending as PromiseLike<void>).then === 'function') {
+      Promise.resolve(pending).catch((handlerError) => {
+        logger?.warn(`[model-chain] onFallback handler rejected: ${String(handlerError)}`)
+      })
+    }
+  } catch (handlerError) {
+    logger?.warn(`[model-chain] onFallback handler threw: ${String(handlerError)}`)
+  }
 }
 
 function nextAvailable(
