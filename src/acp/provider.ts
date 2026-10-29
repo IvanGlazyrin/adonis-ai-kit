@@ -5,6 +5,7 @@ import type { AiDriver } from '../types.js'
 import { AiException, ProviderConfigError } from '../errors.js'
 import type { Logger } from '../logger.js'
 import type {
+  AcpAgentConfig,
   AcpAgentRuntimeConfig,
   AcpMcpServerConfig,
   AcpPermissionPolicy,
@@ -204,10 +205,8 @@ export class AcpDriver implements AiDriver {
     if (this.runtime) return this.prebuiltRuntime(this.runtime)
 
     const predefined = getAcpAgentConfig(agentId)
-    const explicitCommand = this.config.command
-
     // A command is only ever taken from config or from the built-in agent table.
-    if (!explicitCommand && !predefined) {
+    if (!this.config.command && !predefined) {
       throw new ProviderConfigError(
         this.name,
         `Unknown ACP agent "${agentId}". Use one of the built-in agents or set "command" explicitly in the provider config.`
@@ -222,18 +221,33 @@ export class AcpDriver implements AiDriver {
     requireAbsoluteCwd(this.name, cwd)
 
     return {
-      command: explicitCommand ?? builtFromEnv?.command ?? predefined!.command,
-      // An explicit command never inherits the built-in agent's arguments.
-      args: this.config.args ?? (explicitCommand ? [] : (builtFromEnv?.args ?? predefined!.args)),
+      ...this.commandAndArgs(predefined, builtFromEnv),
       cwd,
-      env: buildAgentEnv(
-        this.env,
-        { ...(builtFromEnv?.env ?? {}), ...(this.config.env ?? {}) },
-        this.config.inheritEnv
-      ),
+      env: this.agentEnv(builtFromEnv),
       mcpServers: this.mcpServersFor(builtFromEnv?.mcpServers ?? []),
       authMethodId: this.config.authMethodId ?? builtFromEnv?.authMethodId ?? predefined?.authMethodId,
     }
+  }
+
+  /** The command and its arguments: an explicit command never inherits the built-in agent's arguments. */
+  private commandAndArgs(
+    predefined: AcpAgentConfig | undefined,
+    builtFromEnv: AcpAgentRuntimeConfig | null
+  ): { command: string; args: string[] } {
+    const explicitCommand = this.config.command
+    return {
+      command: explicitCommand ?? builtFromEnv?.command ?? predefined!.command,
+      args: this.config.args ?? (explicitCommand ? [] : (builtFromEnv?.args ?? predefined!.args)),
+    }
+  }
+
+  /** The agent's environment: the built-in agent's env overridden by the provider's, filtered by the inheritance policy. */
+  private agentEnv(builtFromEnv: AcpAgentRuntimeConfig | null): Record<string, string> {
+    return buildAgentEnv(
+      this.env,
+      { ...(builtFromEnv?.env ?? {}), ...(this.config.env ?? {}) },
+      this.config.inheritEnv
+    )
   }
 
   /** A prebuilt runtime is used as given; only its env is merged with the process env. */
