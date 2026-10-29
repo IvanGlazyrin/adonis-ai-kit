@@ -206,21 +206,14 @@ export class ModelsDevSource {
       return this.#cache!
     }
 
-    if (this.#inFlight && this.#inFlightKey === source.key) {
-      this.#logger?.debug?.(`[ModelsDevSource] waiting for in-flight load of ${source.key}`)
-      return this.#inFlight
-    }
-
-    return this.#loadSource(source, { forceRemote: false })
+    return this.#pendingFor(source, `waiting for in-flight load of ${source.key}`) ?? this.#loadSource(source, { forceRemote: false })
   }
 
   async refresh(options: ModelsDevRefreshOptions = {}): Promise<ModelsDevCatalog> {
     const source = await this.#getSource(options)
 
-    if (this.#inFlight && this.#inFlightKey === source.key) {
-      this.#logger?.debug?.(`[ModelsDevSource] deduplicating refresh for ${source.key}`)
-      return this.#inFlight
-    }
+    const pending = this.#pendingFor(source, `deduplicating refresh for ${source.key}`)
+    if (pending) return pending
 
     const forceRemote = options.forceRemote ?? false
     if (forceRemote) {
@@ -403,6 +396,13 @@ export class ModelsDevSource {
 
   #provider(catalog: ModelsDevCatalog, providerId: string): ModelsDevProvider | undefined {
     return Object.hasOwn(catalog, providerId) ? catalog[providerId] : undefined
+  }
+
+  /** The load already running for this source, logging `note`; `null` when none is running. */
+  #pendingFor(source: ModelsDevSourceDescriptor, note: string): Promise<ModelsDevCatalog> | null {
+    if (!this.#inFlight || this.#inFlightKey !== source.key) return null
+    this.#logger?.debug?.(`[ModelsDevSource] ${note}`)
+    return this.#inFlight
   }
 
   #isMemoryFresh(key: string): boolean {
