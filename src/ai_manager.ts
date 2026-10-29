@@ -65,6 +65,17 @@ interface AttemptContext {
   state: AttemptState
 }
 
+/** A cascade attempt whose driver is loaded and whose model is resolved. */
+interface PreparedAttempt {
+  driver: AiDriver
+  providerName: string
+  modelName: string
+  breakerKey: string
+}
+
+/** Reported for a failed attempt whose driver never loaded, so no model name is known yet. */
+const UNRESOLVED_MODEL = 'unresolved'
+
 type ChainRequest = ModelChainCallOptions & {
   provider?: string
   model?: string
@@ -441,18 +452,24 @@ export class AiManager {
       const pConfig = this.config.providers[providerName]
       if (!pConfig) continue
 
-      const modelName = this.modelNameFor(pConfig, providerName, index === 0, target.model)
-      const breakerKey = `${providerName}:${modelName}`
+      const state: AttemptState = { toolsExecuted: false }
+      let attempt: PreparedAttempt
+      try {
+        attempt = await this.prepareAttempt(providerName, pConfig, index === 0, target.model)
+      } catch (err) {
+        this.recordFailedAttempt(attempts, { err, request, providerName, modelName: UNRESOLVED_MODEL, breakerKey: providerName, state })
+        continue
+      }
 
+      const { modelName, breakerKey } = attempt
       if (!this.circuitBreaker.isAvailable(breakerKey)) {
         this.logger?.warn?.(`[AiManager] Skipping "${breakerKey}" because circuit breaker is OPEN.`)
         attempts.push({ provider: providerName, model: modelName, error: new Error('circuit breaker is open') })
         continue
       }
 
-      const state: AttemptState = { toolsExecuted: false }
       try {
-        const result = await this.attemptProvider(request, providerName, modelName, breakerKey, state, operation)
+        const result = await this.attemptProvider(request, attempt, state, operation)
         return { result, provider: providerName, model: modelName }
       } catch (err) {
         this.recordFailedAttempt(attempts, { err, request, providerName, modelName, breakerKey, state })
@@ -494,16 +511,29 @@ export class AiManager {
     )
   }
 
-  /** One provider's attempt, run through its circuit breaker. */
-  private async attemptProvider<T>(
-    request: ChainRequest,
+  /**
+   * Loads the provider's driver and resolves the concrete model: the requested or configured model,
+   * else the driver's own default. The breaker key and pricing use that resolved name.
+   */
+  private async prepareAttempt(
     providerName: string,
-    modelName: string,
-    breakerKey: string,
+    pConfig: ProviderConfig,
+    isPrimary: boolean,
+    requestedModel: string | undefined
+  ): Promise<PreparedAttempt> {
+    const driver = await this.use(providerName)
+    const modelName = this.modelNameFor(pConfig, providerName, isPrimary, requestedModel) ?? driver.defaultModel
+    return { driver, providerName, modelName, breakerKey: `${providerName}:${modelName}` }
+  }
+
+  /** One provider's attempt, run through its circuit breaker. */
+  private attemptProvider<T>(
+    request: ChainRequest,
+    attempt: PreparedAttempt,
     state: AttemptState,
     operation: (ctx: AttemptContext) => Promise<T>
   ): Promise<T> {
-    const driver = await this.use(providerName)
+    const { driver, providerName, modelName, breakerKey } = attempt
     return this.circuitBreaker.execute(
       breakerKey,
       () =>
@@ -530,17 +560,20 @@ export class AiManager {
     return { provider, model }
   }
 
-  /** The primary uses the requested model; a fallback uses its configured fallback model. */
+  /**
+   * The primary uses the requested model; a fallback uses its configured fallback model. Undefined
+   * means no model is configured, so the driver's default applies.
+   */
   private modelNameFor(
     pConfig: ProviderConfig,
     providerName: string,
     isPrimary: boolean,
     requestedModel: string | undefined
-  ): string {
-    if (isPrimary) return requestedModel ?? pConfig.defaultModel ?? 'default'
+  ): string | undefined {
+    if (isPrimary) return requestedModel ?? pConfig.defaultModel
     const fallbackModels = this.config.fallbackModels
     const configured = fallbackModels && Object.hasOwn(fallbackModels, providerName) ? fallbackModels[providerName] : undefined
-    return configured ?? pConfig.defaultModel ?? 'default'
+    return configured ?? pConfig.defaultModel
   }
 
   /**

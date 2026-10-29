@@ -154,3 +154,40 @@ test.group('AiManager provider fallback', () => {
     assert.equal(result.model, 'org/some-model')
   })
 })
+
+test.group('AiManager model resolution without a configured defaultModel', () => {
+  test('the driver default model is used, never the literal "default"', async ({ assert }) => {
+    const requested: string[] = []
+    const m = new MockLanguageModelV4({
+      provider: 'mock',
+      modelId: 'driver-default',
+      doGenerate: async () => ({
+        content: [{ type: 'text', text: 'ok' }],
+        finishReason: finish(),
+        usage: usage(1, 1),
+        warnings: [],
+      }),
+    })
+    const manager = new AiManager(
+      defineConfig({
+        default: 'solo',
+        providers: {
+          solo: {
+            driver: 'custom',
+            factory: () => (name: string) => {
+              requested.push(name)
+              return m
+            },
+          },
+        },
+        catalog: { autoPricing: false },
+      } as any),
+      { info() {}, warn() {}, error() {}, debug() {} }
+    )
+
+    const result = await manager.generateText({ prompt: 'hi', maxRetries: 0 })
+
+    assert.deepEqual(requested, ['custom'])
+    assert.equal(result.model, 'custom')
+  })
+})
