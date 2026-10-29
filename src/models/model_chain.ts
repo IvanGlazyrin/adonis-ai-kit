@@ -1,5 +1,5 @@
 import type { BreakerPermit, CircuitBreaker } from '../circuit_breaker.js'
-import { classifyError, type ErrorClass } from '../error_classifier.js'
+import { classifyError, type ErrorClass, type ErrorClassification } from '../error_classifier.js'
 import { ProviderConfigError, ProviderUnavailableError } from '../errors.js'
 import type { Logger } from '../logger.js'
 import type { ModelResolver } from './catalog_resolver.js'
@@ -137,16 +137,14 @@ export async function runModelChain<T>(
         const classification = classifyError(error, abortSignal)
         settlePermitAfterFailure(permit, classification.countsAsFailure, error)
 
-        const next = nextAvailable(candidates, i + 1, breaker)
-        const canFallBack = classification.kind === 'retryable' || classification.kind === 'skip'
-        if (!canFallBack || toolsExecuted || !next) {
-          logger?.warn(
-            `[model-chain] ${candidate.key} failed with ${classification.errorClass}; not falling back ` +
-              `(kind=${classification.kind}, toolsExecuted=${toolsExecuted}, hasNext=${Boolean(next)})`
-          )
-          throw error
-        }
-
+        const next = fallbackTarget({
+          candidate,
+          classification,
+          toolsExecuted,
+          next: nextAvailable(candidates, i + 1, breaker),
+          error,
+          logger,
+        })
         logger?.warn(
           `[model-chain] ${candidate.key} failed with ${classification.errorClass}; falling back to ${next.key}`
         )
@@ -181,6 +179,29 @@ function acquireCandidate(
   if (permit) return { permit }
   logger?.warn(`[model-chain] circuit breaker is not accepting calls for ${candidate.key}, skipping`)
   return null
+}
+
+/**
+ * The candidate to fall back to. Throws the attempt's own error, after logging why, when the failure
+ * may not fall back: a non-retryable failure, a failure after tools ran, or no candidate left.
+ */
+function fallbackTarget(input: {
+  candidate: ChainCandidate
+  classification: ErrorClassification
+  toolsExecuted: boolean
+  next: ChainCandidate | null
+  error: unknown
+  logger: Logger | undefined
+}): ChainCandidate {
+  const { candidate, classification, toolsExecuted, next, error, logger } = input
+  const canFallBack = classification.kind === 'retryable' || classification.kind === 'skip'
+  if (canFallBack && !toolsExecuted && next) return next
+
+  logger?.warn(
+    `[model-chain] ${candidate.key} failed with ${classification.errorClass}; not falling back ` +
+      `(kind=${classification.kind}, toolsExecuted=${toolsExecuted}, hasNext=${Boolean(next)})`
+  )
+  throw error
 }
 
 /** A ref candidate needs a resolver; a configuration error is raised before any attempt. */
