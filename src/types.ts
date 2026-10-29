@@ -2,10 +2,12 @@ import type { z } from 'zod'
 import type {
   LanguageModel,
   ModelMessage,
+  PrepareStepFunction,
   StepResult,
   StopCondition,
   StreamTextResult as AiStreamTextResult,
   TextStreamPart,
+  ToolCallRepairFunction,
   ToolSet,
 } from 'ai'
 import type { ModelPricing } from './budget/types.js'
@@ -254,6 +256,20 @@ export interface ToolGuardOptions {
   timeoutMs?: number
 }
 
+/** Provider-specific call options keyed by provider name, e.g. `{ anthropic: { ... } }`. */
+export type ProviderOptions = Record<string, Record<string, unknown>>
+
+/** Cache lifetime of an Anthropic prompt-cache breakpoint. */
+export type CacheTtl = '5m' | '1h'
+
+/** Anthropic prompt-cache markers. Each key adds one breakpoint; at most four are sent. */
+export interface PromptCacheOptions {
+  /** Marks the system prompt (`instructions`). */
+  instructions?: CacheTtl
+  /** Marks the last tool, with the tools sorted by name so the cached prefix stays stable. */
+  tools?: CacheTtl
+}
+
 export interface GenerateTextOptions extends ModelChainCallOptions {
   prompt?: string
   messages?: ModelMessage[]
@@ -286,6 +302,25 @@ export interface GenerateTextOptions extends ModelChainCallOptions {
   abortSignal?: AbortSignal
   metadata?: Record<string, unknown>
   toolGuard?: ToolGuardOptions
+  /**
+   * Runs before each step of the tool loop (AI SDK `prepareStep`). Its `model` is ignored with a warning:
+   * fallback, the circuit breaker and cost stay bound to the attempt's model. Tools cannot be added here,
+   * only narrowed with `activeTools`.
+   */
+  prepareStep?: PrepareStepFunction<ToolSet>
+  /** Only these tools are offered to the model, in every step. Denied tools stay denied. */
+  activeTools?: string[]
+  /** Provider-specific call options (AI SDK `providerOptions`). Passed through as is. */
+  providerOptions?: ProviderOptions
+  /** Anthropic prompt-cache breakpoints for the system prompt and the tools. */
+  promptCache?: PromptCacheOptions
+  /** Repairs a tool call that names an unknown tool or has invalid input (AI SDK `repairToolCall`). */
+  repairToolCall?: ToolCallRepairFunction<ToolSet>
+  /**
+   * Strips prose around the JSON answer before it is parsed with `schema` (see `extractFirstJsonValue`).
+   * Off by default. Not applied to string models or ACP agents.
+   */
+  jsonRecovery?: boolean
 }
 
 export interface GenerateTextResult {
@@ -354,6 +389,8 @@ export interface GenerateObjectOptions<T> extends ModelChainCallOptions {
   /** @deprecated Use `maxOutputTokens`. */
   maxTokens?: number
   abortSignal?: AbortSignal
+  /** Strips prose around the JSON answer before parsing (see `extractFirstJsonValue`). Off by default. */
+  jsonRecovery?: boolean
 }
 
 export interface GenerateObjectResult<T> {

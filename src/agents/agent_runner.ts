@@ -1,5 +1,5 @@
 import type { z } from 'zod'
-import type { ToolSet } from 'ai'
+import type { PrepareStepFunction, ToolSet } from 'ai'
 import type {
   GenerateObjectOptions,
   GenerateObjectResult,
@@ -11,6 +11,20 @@ import type {
 import type { AiManager } from '../ai_manager.js'
 import type { AgentPromptConfig } from './loader.js'
 import type { ToolPermission } from './manifest.js'
+
+/**
+ * The caller's `prepareStep` with any `instructions` or `system` it returns removed: the agent's own prompt
+ * stays the same on every step, so a caller cannot replace it mid-run.
+ */
+function keepAgentPrompt(prepareStep: PrepareStepFunction<ToolSet> | undefined): PrepareStepFunction<ToolSet> | undefined {
+  if (!prepareStep) return undefined
+  return async (context) => {
+    const result = await prepareStep(context)
+    if (!result || (result.instructions === undefined && result.system === undefined)) return result
+    const { instructions: _instructions, system: _system, ...rest } = result
+    return rest
+  }
+}
 
 export interface AgentRunnerOptions {
   tools?: ToolSet
@@ -159,6 +173,7 @@ export class AgentRunner {
       tools,
       toolPermissions,
       toolGuard: baseOpts.toolGuard ?? this.defaultOptions.toolGuard,
+      prepareStep: keepAgentPrompt(baseOpts.prepareStep),
     })
   }
 
@@ -178,6 +193,7 @@ export class AgentRunner {
       tools,
       toolPermissions,
       toolGuard: baseOpts.toolGuard ?? this.defaultOptions.toolGuard,
+      prepareStep: keepAgentPrompt(baseOpts.prepareStep),
     })
   }
 

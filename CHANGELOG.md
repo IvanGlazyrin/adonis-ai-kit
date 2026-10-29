@@ -14,6 +14,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Call options on `generateText` / `streamText` (AI SDK v7 primitives): `prepareStep` (per-step control; its `model` is ignored with a warning, `AgentRunner` also drops any `instructions` or `system` it returns), `activeTools`, `providerOptions`, `repairToolCall` (passed through; the AI SDK already lists the allowed tool names in its error), `promptCache` (Anthropic `cacheControl` markers on the system prompt and on the last tool in name order, with the TTL rules validated before the call) and `jsonRecovery` (strips prose around the JSON answer with `schema`; off by default).
+- `stopOnBudget({ maxTokens, maxCostUsd }, costTracker)` in `adonis-ai-kit/budget`: a `stopWhen` condition that ends the tool loop after the step that exceeds a token or cost limit.
+- `extractFirstJsonValue(text)` export.
 - `adonis-ai-kit/testing` subpath export: `fakeModel()` (scripted answers for `generateText` and `streamText`, recorded calls, assertions on prompts, offered tools and provider options), `fakeTools()` (recorded tool executions), `fakeApiError()`, `fakeProvider()`, `fakeLanguageModels()` and `fakeResolver()`. The fakes replace the model, so fallback, the circuit breaker, guards and cost tracking run as in production.
 - `LanguageModelSource` interface: `AiConfig.languageModels` accepts any object with `create(model)` and `shutdown()`. `LanguageModelFactory` already satisfies it.
 

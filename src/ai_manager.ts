@@ -1,5 +1,23 @@
-import { generateText, streamText, stepCountIs, NoObjectGeneratedError, Output } from 'ai'
-import type { LanguageModel, LanguageModelUsage, ModelMessage, StepResult, ToolSet } from 'ai'
+import {
+  extractJsonMiddleware,
+  generateText,
+  streamText,
+  stepCountIs,
+  NoObjectGeneratedError,
+  Output,
+  wrapLanguageModel,
+} from 'ai'
+import type {
+  Instructions,
+  LanguageModel,
+  LanguageModelUsage,
+  ModelMessage,
+  PrepareStepFunction,
+  StepResult,
+  ToolSet,
+} from 'ai'
+import { extractFirstJsonValue } from './json_recovery.js'
+import { cacheControlFor, mergeProviderOptions, validatePromptCache } from './prompt_cache.js'
 import { CostTracker } from './budget/cost_tracker.js'
 import type { ModelPricing } from './budget/types.js'
 import { ConfirmationService } from './guard/confirmation.js'
@@ -19,6 +37,7 @@ import { AgentLoader, type AgentPromptConfig } from './agents/loader.js'
 import { AgentRunner, type AgentRunnerOptions } from './agents/agent_runner.js'
 import type { AcpProviderConfig } from './acp/types.js'
 import {
+  ACP_NPM,
   LanguageModelFactory,
   attemptSideEffectHooks,
   buildChainCandidates,
@@ -36,8 +55,10 @@ import type {
   GenerateObjectResult,
   GenerateTextOptions,
   GenerateTextResult,
+  CacheTtl,
   ModelChainCallOptions,
   ProviderConfig,
+  ProviderOptions,
   StreamTextOptions,
   StreamTextResult,
   TokenUsage,
@@ -67,6 +88,8 @@ interface AttemptContext {
   /** Circuit breaker key of this attempt. */
   breakerKey: string
   state: AttemptState
+  /** Whether this attempt runs an ACP agent (its JSON and side-effect rules differ). */
+  acp: boolean
 }
 
 /** A cascade attempt whose driver is loaded and whose model is resolved. */
@@ -246,6 +269,55 @@ function sleep(ms: number): Promise<void> {
 function failedAttemptUsage(err: unknown, state: AttemptState): TokenUsage {
   if (NoObjectGeneratedError.isInstance(err)) return normalizeUsage(err.usage)
   return sumUsage(state.stepUsages)
+}
+
+/** The system prompt, as a cache-marked system message when `promptCache.instructions` is set. */
+function systemInstructions(options: GenerateTextOptions): Instructions | undefined {
+  if (!options.system) return undefined
+  const ttl = options.promptCache?.instructions
+  if (!ttl) return options.system
+  return {
+    role: 'system',
+    content: options.system,
+    providerOptions: { anthropic: { cacheControl: cacheControlFor(ttl) } },
+  }
+}
+
+/**
+ * The tools with the prompt-cache marker on the last one in name order, and that order as `toolOrder`, so the
+ * cached prefix stays the same between calls. Without a `ttl` the tools pass through unchanged.
+ */
+function cacheTools(
+  tools: ToolSet | undefined,
+  ttl: CacheTtl | undefined
+): { tools: ToolSet | undefined; toolOrder: string[] | undefined } {
+  if (!tools || !ttl) return { tools, toolOrder: undefined }
+  const order = Object.keys(tools).sort()
+  const last = order[order.length - 1]
+  const lastTool = tools[last] as { providerOptions?: ProviderOptions }
+  const marked = {
+    ...tools,
+    [last]: {
+      ...lastTool,
+      providerOptions: mergeProviderOptions(lastTool.providerOptions, {
+        anthropic: { cacheControl: cacheControlFor(ttl) },
+      }),
+    },
+  } as ToolSet
+  return { tools: marked, toolOrder: order }
+}
+
+/** With `jsonRecovery`, the model strips the prose around its JSON in every text part. String and ACP models are left alone. */
+function withJsonRecovery(
+  model: LanguageModel,
+  options: { jsonRecovery?: boolean; schema?: unknown },
+  acp: boolean
+): LanguageModel {
+  if (!options.jsonRecovery || !options.schema || acp || typeof model === 'string') return model
+  return wrapLanguageModel({
+    model,
+    middleware: extractJsonMiddleware({ transform: extractFirstJsonValue }),
+  })
 }
 
 /**
@@ -559,6 +631,7 @@ export class AiManager {
           providerName,
           breakerKey,
           state,
+          acp: this.config.providers[providerName]?.driver === 'acp',
         }),
       (err) => classifyError(err, request.abortSignal).countsAsFailure
     )
@@ -680,6 +753,7 @@ export class AiManager {
           providerName: attempt.model.providerID,
           breakerKey: attempt.key,
           state,
+          acp: attempt.model.npm === ACP_NPM,
         })
       },
       {
@@ -715,6 +789,23 @@ export class AiManager {
     }
 
     return Object.keys(prepared).length > 0 ? (prepared as unknown as ToolSet) : undefined
+  }
+
+  /**
+   * The caller's `prepareStep`, with a returned `model` dropped: fallback, the circuit breaker and cost are bound
+   * to the model of the attempt, so a step cannot switch it.
+   */
+  private prepareStepOf(prepareStep: PrepareStepFunction<ToolSet> | undefined): PrepareStepFunction<ToolSet> | undefined {
+    if (!prepareStep) return undefined
+    return async (context) => {
+      const result = await prepareStep(context)
+      if (!result || result.model === undefined) return result
+      this.logger?.warn?.(
+        '[AiManager] prepareStep returned a model; it is ignored. Fallback, the circuit breaker and cost stay bound to the attempt model.'
+      )
+      const { model: _ignored, ...rest } = result
+      return rest
+    }
   }
 
   /** Marks the attempt as having run tools, so the chain never falls back after a side effect. */
@@ -761,13 +852,19 @@ export class AiManager {
         state.stepUsages.push(step.usage)
       }
     )
+    const { tools, toolOrder } = cacheTools(this.prepareTools(options, state), options.promptCache?.tools)
     const common = {
       model,
-      instructions: options.system || undefined,
+      instructions: systemInstructions(options),
       temperature: options.temperature,
       topP: options.topP,
       maxOutputTokens,
-      tools: this.prepareTools(options, state),
+      tools,
+      toolOrder,
+      activeTools: options.activeTools,
+      prepareStep: this.prepareStepOf(options.prepareStep),
+      providerOptions: options.providerOptions,
+      repairToolCall: options.repairToolCall,
       stopWhen: options.stopWhen ?? (options.maxSteps ? stepCountIs(options.maxSteps) : undefined),
       maxRetries: options.maxRetries,
       onToolExecutionStart: sideEffects.onToolExecutionStart,
@@ -883,6 +980,7 @@ export class AiManager {
    * Token usage is recorded when the stream ends or is aborted.
    */
   async streamText(options: StreamTextOptions): Promise<StreamTextResult> {
+    validatePromptCache(options)
     const startTime = Date.now()
     const agentName = this.agentNameOf(options)
 
@@ -898,9 +996,9 @@ export class AiManager {
 
     const { result: raw, provider, model } = await this.executeWithFallback(
       { ...options, abortSignal: signal },
-      async ({ getModel, modelName, providerName, breakerKey, state }) => {
+      async ({ getModel, modelName, providerName, breakerKey, state, acp }) => {
         const pricingReady = this.warmPricing(providerName, modelName)
-        const languageModel = await getModel()
+        const languageModel = withJsonRecovery(await getModel(), options, acp)
 
         let attemptFailed = false
         let accounted = false
@@ -1059,12 +1157,13 @@ export class AiManager {
     output: ReturnType<typeof Output.object> | undefined,
     costMetadata: (result: TextCallResult) => Record<string, unknown>
   ) {
+    validatePromptCache(options)
     const startTime = Date.now()
     const { result, provider, model } = await this.executeWithFallback(
       options,
-      async ({ getModel, modelName, providerName, state }) => {
+      async ({ getModel, modelName, providerName, state, acp }) => {
         void this.warmPricing(providerName, modelName)
-        const languageModel = await getModel()
+        const languageModel = withJsonRecovery(await getModel(), options, acp)
         const params = this.buildTextParams(options, languageModel, state, options.abortSignal)
         return generateText({ ...params, ...(output ? { output } : {}) } as TextCallParams)
       }

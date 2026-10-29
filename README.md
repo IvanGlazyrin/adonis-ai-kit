@@ -334,6 +334,35 @@ result.model    // its modelID
   `manager.shutdown()` shuts it down (stops ACP agents).
 - `schema`, `stopWhen`, `maxRetries` and `onStepFinish` work on the chain path too. Empty `models` uses the provider cascade.
 
+### 8. Step Control, Prompt Cache & JSON Recovery
+
+```ts
+import { stopOnBudget } from 'adonis-ai-kit/budget'
+
+const result = await ai.generateText({
+  system: 'You are a support agent.',
+  prompt: 'Find the order and refund it',
+  tools,
+  maxSteps: 8,
+  // Narrow the tools of a step, or stop the tool loop once the budget is spent.
+  prepareStep: ({ stepNumber }) => (stepNumber > 2 ? { activeTools: ['refund'] } : undefined),
+  stopWhen: stopOnBudget({ maxTokens: 20_000, maxCostUsd: 0.5 }, ai.getCostTracker()),
+  // Anthropic prompt cache for the system prompt (one hour). Tools are not cached here: see the note below.
+  promptCache: { instructions: '1h' },
+  // Repairs a call that names an unknown tool (the error lists the allowed tools).
+  repairToolCall: async ({ toolCall }) => toolCall,
+})
+```
+
+- `prepareStep` runs before each step. A `model` it returns is ignored with a warning: fallback, the circuit breaker
+  and cost stay bound to the attempt's model. `AgentRunner` also drops any `instructions` or `system` it returns.
+- `activeTools` offers only the named tools; a denied tool stays denied even when named.
+- `promptCache` marks Anthropic cache breakpoints (at most four). A one-hour instructions cache needs a one-hour tools
+  cache, and a request-level one-hour cache needs every explicit breakpoint to be one hour; other combinations throw
+  `E_AI_INVALID_ARGUMENT` before the call. Do not narrow tools per step (`activeTools`, `prepareStep`) when `promptCache.tools`
+  is set: a different tool list changes the cached prefix.
+- `jsonRecovery: true` with `schema` strips the prose around the JSON answer (`extractFirstJsonValue`). It is off by default.
+
 ## Ace CLI Commands
 
 `adonis-ai-kit` registers helpful Ace commands:
