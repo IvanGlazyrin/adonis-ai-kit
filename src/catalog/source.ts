@@ -469,18 +469,8 @@ export class ModelsDevSource {
     source: ModelsDevSourceDescriptor,
     options: { forceRemote: boolean }
   ): Promise<{ catalog: ModelsDevCatalog; isFallback: boolean }> {
-    if (source.overridePath) {
-      this.#logger?.info?.(`[ModelsDevSource] loading from override: ${source.overridePath}`)
-      try {
-        const data = sanitizeCatalog(JSON.parse(await readFile(source.overridePath, 'utf-8')))
-        if (data) return { catalog: this.#injectSystemProviders(data), isFallback: false }
-        this.#logger?.warn?.('[ModelsDevSource] override file has no valid providers')
-      } catch (err) {
-        this.#logger?.warn?.(
-          `[ModelsDevSource] failed to parse override file: ${err instanceof Error ? err.message : String(err)}`
-        )
-      }
-    }
+    const override = await this.#readOverride(source)
+    if (override) return { catalog: override, isFallback: false }
 
     // 1. A fresh disk cache wins (unless a remote refresh is forced)
     const local = await this.#readLocalCacheWithAge(source.cachePath)
@@ -494,14 +484,36 @@ export class ModelsDevSource {
       return { catalog: this.#injectSystemProviders(remote), isFallback: false }
     }
 
-    // 3. Network failed: a stale cache is better than nothing
+    return this.#withoutNetwork(local)
+  }
+
+  /** The override file's catalog, or `null` when it is absent, unreadable, or has no valid providers. */
+  async #readOverride(source: ModelsDevSourceDescriptor): Promise<ModelsDevCatalog | null> {
+    if (!source.overridePath) return null
+    this.#logger?.info?.(`[ModelsDevSource] loading from override: ${source.overridePath}`)
+    try {
+      const data = sanitizeCatalog(JSON.parse(await readFile(source.overridePath, 'utf-8')))
+      if (data) return this.#injectSystemProviders(data)
+      this.#logger?.warn?.('[ModelsDevSource] override file has no valid providers')
+    } catch (err) {
+      this.#logger?.warn?.(
+        `[ModelsDevSource] failed to parse override file: ${err instanceof Error ? err.message : String(err)}`
+      )
+    }
+    return null
+  }
+
+  /** Network failed: a stale cache is better than the built-in fallback catalog. */
+  #withoutNetwork(local: { data: ModelsDevCatalog; ageMs: number } | null): {
+    catalog: ModelsDevCatalog
+    isFallback: boolean
+  } {
     if (local) {
       this.#logger?.warn?.(
         `[ModelsDevSource] refresh failed, using stale cache (${Math.round(local.ageMs / 3_600_000)}h old)`
       )
       return { catalog: this.#injectSystemProviders(local.data), isFallback: false }
     }
-
     return { catalog: this.#injectSystemProviders(this.#getFallbackModels()), isFallback: true }
   }
 
