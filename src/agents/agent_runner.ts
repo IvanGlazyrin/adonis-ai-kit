@@ -30,6 +30,26 @@ export interface AgentRunnerOptions {
   defaultToolPermission?: ToolPermission
 }
 
+/** Caller-supplied call fields that every agent call resolves the same way. */
+interface SharedCallFields {
+  system?: string
+  model?: string
+  provider?: string
+  temperature?: number
+  maxOutputTokens?: number
+  /** @deprecated Use `maxOutputTokens`. */
+  maxTokens?: number
+}
+
+interface SharedCallOptions {
+  agentName: string
+  system: string
+  model?: string
+  provider?: string
+  temperature?: number
+  maxOutputTokens?: number
+}
+
 export class AgentRunner {
   private manager: AiManager
   private config: AgentPromptConfig
@@ -107,6 +127,20 @@ export class AgentRunner {
   }
 
   /**
+   * Fields every agent call resolves the same way: caller value, then runner default, then manifest.
+   */
+  private sharedCallOptions(baseOpts: SharedCallFields): SharedCallOptions {
+    return {
+      agentName: this.config.id,
+      system: this.mergedSystem(baseOpts.system),
+      model: baseOpts.model ?? this.defaultOptions.model ?? this.config.model,
+      provider: baseOpts.provider ?? this.defaultOptions.provider ?? this.config.provider,
+      temperature: baseOpts.temperature ?? this.defaultOptions.temperature ?? this.config.temperature,
+      maxOutputTokens: this.maxOutputTokens(baseOpts),
+    }
+  }
+
+  /**
    * Executes a text generation step with agent instructions, budget tracking, and tool permissions.
    *
    * Security: `tools`, `toolPermissions`, `system` and `toolGuard` are spread AFTER the caller's
@@ -120,12 +154,7 @@ export class AgentRunner {
 
     return this.manager.generateText({
       ...baseOpts,
-      agentName: this.config.id,
-      system: this.mergedSystem(baseOpts.system),
-      model: baseOpts.model ?? this.defaultOptions.model ?? this.config.model,
-      provider: baseOpts.provider ?? this.defaultOptions.provider ?? this.config.provider,
-      temperature: baseOpts.temperature ?? this.defaultOptions.temperature ?? this.config.temperature,
-      maxOutputTokens: this.maxOutputTokens(baseOpts),
+      ...this.sharedCallOptions(baseOpts),
       maxSteps: baseOpts.maxSteps ?? this.config.stopSteps,
       tools,
       toolPermissions,
@@ -144,12 +173,7 @@ export class AgentRunner {
 
     return this.manager.streamText({
       ...baseOpts,
-      agentName: this.config.id,
-      system: this.mergedSystem(baseOpts.system),
-      model: baseOpts.model ?? this.defaultOptions.model ?? this.config.model,
-      provider: baseOpts.provider ?? this.defaultOptions.provider ?? this.config.provider,
-      temperature: baseOpts.temperature ?? this.defaultOptions.temperature ?? this.config.temperature,
-      maxOutputTokens: this.maxOutputTokens(baseOpts),
+      ...this.sharedCallOptions(baseOpts),
       maxSteps: baseOpts.maxSteps ?? this.config.stopSteps,
       tools,
       toolPermissions,
@@ -179,14 +203,9 @@ export class AgentRunner {
 
     return this.manager.generateObject({
       ...baseOpts,
+      ...this.sharedCallOptions(baseOpts),
       schema: targetSchema,
       schemaName: baseOpts.schemaName ?? this.config.outputSchemaName ?? this.config.id,
-      agentName: this.config.id,
-      system: this.mergedSystem(baseOpts.system),
-      model: baseOpts.model ?? this.defaultOptions.model ?? this.config.model,
-      provider: baseOpts.provider ?? this.defaultOptions.provider ?? this.config.provider,
-      temperature: baseOpts.temperature ?? this.defaultOptions.temperature ?? this.config.temperature,
-      maxOutputTokens: this.maxOutputTokens(baseOpts),
     })
   }
 
