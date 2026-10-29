@@ -585,19 +585,30 @@ export class ModelsDevSource {
 
     let lastError: Error | undefined
     for (let attempt = 1; attempt <= 2; attempt++) {
-      try {
-        return await this.#fetchAttempt(cachePath, etagPath, validators)
-      } catch (err) {
-        lastError = err instanceof Error ? err : new Error(String(err))
-        this.#logger?.warn?.(`[ModelsDevSource] fetch attempt ${attempt} failed: ${lastError.message}`)
-        if (attempt < 2) {
-          await new Promise((resolve) => setTimeout(resolve, 300 * attempt))
-        }
-      }
+      const result = await this.#attemptLogged(attempt, cachePath, etagPath, validators)
+      if (result.ok) return result.catalog
+      lastError = result.error
+      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 300 * attempt))
     }
 
     this.#logger?.warn?.(`[ModelsDevSource] all network attempts failed. Error: ${lastError?.message}`)
     return null
+  }
+
+  /** One attempt, with a failure logged as a value rather than thrown. */
+  async #attemptLogged(
+    attempt: number,
+    cachePath: string,
+    etagPath: string,
+    validators: CacheValidators
+  ): Promise<{ ok: true; catalog: ModelsDevCatalog } | { ok: false; error: Error }> {
+    try {
+      return { ok: true, catalog: await this.#fetchAttempt(cachePath, etagPath, validators) }
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err))
+      this.#logger?.warn?.(`[ModelsDevSource] fetch attempt ${attempt} failed: ${error.message}`)
+      return { ok: false, error }
+    }
   }
 
   /** One request. Throws on any failure, including a 304 with no local copy to serve. */
