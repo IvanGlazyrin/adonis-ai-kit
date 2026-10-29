@@ -329,7 +329,7 @@ export class AiManager {
   }
 
   /**
-   * Dynamically resolves a model reference string (e.g. 'openai/gpt-4o', 'claude-3-5-sonnet')
+   * Dynamically resolves a model reference string (e.g. 'openai/gpt-6-sol', 'claude-sonnet-5-5')
    * against the models.dev catalog.
    */
   async resolveModel(modelRef: string, defaultProvider?: string) {

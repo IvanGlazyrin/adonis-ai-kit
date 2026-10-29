@@ -17,7 +17,7 @@ export default class MakeAiAgentCommand extends BaseCommand {
   @flags.string({ description: 'AI provider to use (default: app default)', default: '' })
   declare provider: string
 
-  @flags.string({ description: 'Model to use (e.g. gpt-4o, claude-3-7-sonnet-latest)', default: '' })
+  @flags.string({ description: 'Model to use (e.g. gpt-6-sol, claude-sonnet-5-5)', default: '' })
   declare model: string
 
   @flags.number({ description: 'Max token budget per request', default: 2048 })
