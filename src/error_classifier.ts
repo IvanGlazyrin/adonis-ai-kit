@@ -161,13 +161,18 @@ export function classifyErrorClass(error: unknown): ErrorClass {
 
   const status = statusOf(error)
   if (status !== undefined) return classByStatusCode(status, message)
+
+  return classifyByIdentity(error, name, message) ?? classifyByMessage(message) ?? 'unknown'
+}
+
+/** Errors identified by their name or their code, rather than by status or message. */
+function classifyByIdentity(error: unknown, name: unknown, message: string): ErrorClass | undefined {
   if (NO_OUTPUT_ERROR_NAMES.has(name)) return classifyNoOutput(message)
   if (name === 'TimeoutError') return 'timeout'
 
   const code = codeOf(error)
   if (code && NETWORK_CODES.has(code)) return 'network_error'
-
-  return classifyByMessage(message) ?? 'unknown'
+  return undefined
 }
 
 const RETRYABLE_ERROR_CLASSES: ReadonlySet<ErrorClass> = new Set([
@@ -227,6 +232,11 @@ function outcomeOf(kind: ErrorKind, reason: string, errorClass: ErrorClass = 'un
   }
 }
 
+/** A missing SDK package or a configuration error: the next provider may still work. */
+function isSkippableConfigError(error: unknown): error is AiException {
+  return error instanceof AiException && (error.code === 'E_AI_MISSING_DEPENDENCY' || error.code === 'E_AI_CONFIG_ERROR')
+}
+
 /**
  * Decisions that need no HTTP analysis: the caller's abort, breaker and dependency states, and values
  * that are not errors. `null` when the error must be classified by its status and class.
@@ -234,12 +244,7 @@ function outcomeOf(kind: ErrorKind, reason: string, errorClass: ErrorClass = 'un
 function classifyWithoutStatus(error: unknown, abortSignal?: AbortSignal): ErrorClassification | null {
   if (abortSignal?.aborted) return outcomeOf('fatal', 'aborted by caller')
   if (error instanceof ProviderUnavailableError) return outcomeOf('skip', 'circuit breaker open')
-  if (
-    error instanceof AiException &&
-    (error.code === 'E_AI_MISSING_DEPENDENCY' || error.code === 'E_AI_CONFIG_ERROR')
-  ) {
-    return outcomeOf('skip', error.code)
-  }
+  if (isSkippableConfigError(error)) return outcomeOf('skip', error.code)
   if (error === null || typeof error !== 'object') return outcomeOf('fatal', 'unknown error')
 
   const name = (error as Record<string, any>).name
