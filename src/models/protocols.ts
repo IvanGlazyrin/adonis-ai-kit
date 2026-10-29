@@ -1,3 +1,6 @@
+/** The npm package of ACP agents: `model.npm` for an ACP model, and the marker the fallback rules check. */
+export const ACP_NPM = '@mcpc-tech/acp-ai-provider'
+
 export const PROTOCOL_TO_NPM: Readonly<Record<string, string>> = {
   'openai': '@ai-sdk/openai',
   'anthropic': '@ai-sdk/anthropic',
@@ -20,7 +23,7 @@ export const PROTOCOL_TO_NPM: Readonly<Record<string, string>> = {
   'vercel': '@ai-sdk/vercel',
   'gitlab': '@gitlab/gitlab-ai-provider',
   'qwencode': '@ai-sdk/openai-compatible',
-  'acp': '@mcpc-tech/acp-ai-provider',
+  'acp': ACP_NPM,
 }
 
 export function resolveProviderNpm(config: {

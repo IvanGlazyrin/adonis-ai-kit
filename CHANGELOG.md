@@ -3,6 +3,15 @@
 All notable changes to `adonis-ai-kit` are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+
+- Fallback is now refused after provider-executed tool calls and after a retryable ACP failure. A provider-executed tool call (for example a server-side web search) counts as a side effect, as does a call to an ACP agent that started; a retryable ACP failure (timeout, overload, network) is thrown as is instead of moving to the next model. Missing ACP packages and config errors still fall back. Unknown tools (`invalid` calls) do not count, since they never ran.
+- Tokens consumed by a failed attempt, from its finished steps (or from a `NoObjectGeneratedError`), are recorded in the cost tracker with `metadata.failed: true` and the error class. A stream that fails after it started records the usage of its finished steps.
+- `AiManager` passes `onStepEnd` to the AI SDK instead of the deprecated `onStepFinish`. The `onStepFinish` option keeps working and runs after the side-effect check.
+- New `attemptSideEffectHooks()` export from `adonis-ai-kit/models` for code that calls the AI SDK directly: it returns the `onToolExecutionStart` and `onStepEnd` hooks that mark a side effect.
+
 ## [1.2.1] - 2026-10-29
 
 ### Added

@@ -1,5 +1,5 @@
-import { generateText, streamText, stepCountIs, Output } from 'ai'
-import type { LanguageModel, ModelMessage, StepResult, ToolSet } from 'ai'
+import { generateText, streamText, stepCountIs, NoObjectGeneratedError, Output } from 'ai'
+import type { LanguageModel, LanguageModelUsage, ModelMessage, StepResult, ToolSet } from 'ai'
 import { CostTracker } from './budget/cost_tracker.js'
 import type { ModelPricing } from './budget/types.js'
 import { ConfirmationService } from './guard/confirmation.js'
@@ -12,7 +12,7 @@ import {
   ProviderConfigError,
 } from './errors.js'
 import { classifyError } from './error_classifier.js'
-import { EMPTY_USAGE, normalizeUsage, sumUsage } from './usage.js'
+import { normalizeUsage, sumUsage } from './usage.js'
 import { ModelsDevSource, resolveCatalogProviderId } from './catalog/source.js'
 import type { ModelCatalogEntry } from './catalog/models_dev.js'
 import { AgentLoader, type AgentPromptConfig } from './agents/loader.js'
@@ -20,6 +20,7 @@ import { AgentRunner, type AgentRunnerOptions } from './agents/agent_runner.js'
 import type { AcpProviderConfig } from './acp/types.js'
 import {
   LanguageModelFactory,
+  attemptSideEffectHooks,
   buildChainCandidates,
   runModelChain,
   type ChainCandidate,
@@ -50,9 +51,11 @@ type TextCallParams = Parameters<typeof generateText<ToolSet>>[0]
 type TextCallResult = Awaited<ReturnType<typeof generateText<ToolSet>>>
 type StreamCallParams = Parameters<typeof streamText<ToolSet>>[0]
 
-/** Lets the fallback loop know whether the failed attempt already ran tools (side effects). */
+/** Per-attempt facts the fallback loop reads: whether tools (or an ACP call) already ran, and the usage of finished steps. */
 interface AttemptState {
   toolsExecuted: boolean
+  /** Usage of every step this attempt finished, so a failed attempt's tokens can still be recorded. */
+  stepUsages: LanguageModelUsage[]
 }
 
 interface AttemptContext {
@@ -79,6 +82,7 @@ const UNRESOLVED_MODEL = 'unresolved'
 type ChainRequest = ModelChainCallOptions & {
   provider?: string
   model?: string
+  agentName?: string
   abortSignal?: AbortSignal
 }
 
@@ -232,6 +236,15 @@ function sleep(ms: number): Promise<void> {
     const timer = setTimeout(resolve, ms)
     timer.unref?.()
   })
+}
+
+/**
+ * Tokens a failed attempt consumed. A `NoObjectGeneratedError` carries its own usage, which already covers
+ * the failing call; otherwise the usage of the steps the attempt finished is the consumed amount.
+ */
+function failedAttemptUsage(err: unknown, state: AttemptState): TokenUsage {
+  if (NoObjectGeneratedError.isInstance(err)) return normalizeUsage(err.usage)
+  return sumUsage(state.stepUsages)
 }
 
 /**
@@ -438,8 +451,9 @@ export class AiManager {
     request: ChainRequest,
     operation: (ctx: AttemptContext) => Promise<T>
   ): Promise<{ result: T; provider: string; model: string }> {
+    const attemptOperation = this.accountFailedAttempts(request, operation)
     if (request.models && request.models.length > 0) {
-      return this.executeOverChain(request, request.models, operation)
+      return this.executeOverChain(request, request.models, attemptOperation)
     }
 
     const target = this.resolveTarget(request)
@@ -452,7 +466,7 @@ export class AiManager {
       const pConfig = this.config.providers[providerName]
       if (!pConfig) continue
 
-      const state: AttemptState = { toolsExecuted: false }
+      const state: AttemptState = { toolsExecuted: false, stepUsages: [] }
       let attempt: PreparedAttempt
       try {
         attempt = await this.prepareAttempt(providerName, pConfig, index === 0, target.model)
@@ -469,7 +483,7 @@ export class AiManager {
       }
 
       try {
-        const result = await this.attemptProvider(request, attempt, state, operation)
+        const result = await this.attemptProvider(request, attempt, state, attemptOperation)
         return { result, provider: providerName, model: modelName }
       } catch (err) {
         this.recordFailedAttempt(attempts, { err, request, providerName, modelName, breakerKey, state })
@@ -502,7 +516,8 @@ export class AiManager {
   ): void {
     const { err, request, providerName, modelName, breakerKey, state } = failure
     const classification = classifyError(err, request.abortSignal)
-    this.assertCanFallBack(err, classification.kind, state, breakerKey)
+    const acp = this.config.providers[providerName]?.driver === 'acp'
+    this.assertCanFallBack(err, classification.kind, state, breakerKey, acp)
 
     const error = err instanceof Error ? err : new Error(String(err))
     attempts.push({ provider: providerName, model: modelName, error })
@@ -578,21 +593,54 @@ export class AiManager {
 
   /**
    * Throws unless a failed attempt may move on: fatal errors end the call, and so does any attempt
-   * that already ran tools, to avoid repeating side effects on another provider.
+   * that already ran tools, to avoid repeating side effects on another provider. A retryable failure of an
+   * ACP agent ends the call too: the agent runs its own tools inside one call, so a retry could repeat them.
    */
   private assertCanFallBack(
     err: unknown,
     kind: string,
     state: AttemptState,
-    breakerKey: string
+    breakerKey: string,
+    acp: boolean
   ): void {
     if (kind === 'fatal') throw err
-    if (state.toolsExecuted) {
+    if (state.toolsExecuted || (acp && kind === 'retryable')) {
       const message = err instanceof Error ? err.message : String(err)
+      const reason = state.toolsExecuted ? 'after executing tools' : 'after a retryable ACP agent failure'
       this.logger?.error?.(
-        `[AiManager] "${breakerKey}" failed after executing tools (${message}); not retrying on another provider to avoid repeating side effects.`
+        `[AiManager] "${breakerKey}" failed ${reason} (${message}); not retrying on another provider to avoid repeating side effects.`
       )
       throw err
+    }
+  }
+
+  /**
+   * Wraps an attempt so that a failure still records the tokens it consumed (D2.4). The record carries
+   * `failed: true` and the error class. It is written before the fallback decision, on every path.
+   */
+  private accountFailedAttempts<T>(
+    request: ChainRequest,
+    operation: (ctx: AttemptContext) => Promise<T>
+  ): (ctx: AttemptContext) => Promise<T> {
+    return async (ctx) => {
+      const startTime = Date.now()
+      try {
+        return await operation(ctx)
+      } catch (err) {
+        const usage = failedAttemptUsage(err, ctx.state)
+        if (usage.totalTokens > 0) {
+          await this.recordCost(
+            this.agentNameOf(request),
+            ctx.providerName,
+            ctx.modelName,
+            usage,
+            Date.now() - startTime,
+            this.warmPricing(ctx.providerName, ctx.modelName),
+            { failed: true, errorClass: classifyError(err).errorClass }
+          )
+        }
+        throw err
+      }
     }
   }
 
@@ -623,6 +671,7 @@ export class AiManager {
           set toolsExecuted(value: boolean) {
             if (value) attempt.markToolsExecuted()
           },
+          stepUsages: [],
         }
         return operation({
           getModel: () => this.languageModels.create(attempt.model),
@@ -703,6 +752,14 @@ export class AiManager {
     signal?: AbortSignal
   ): TextCallParams & StreamCallParams {
     const maxOutputTokens = options.maxOutputTokens ?? options.maxTokens
+    const sideEffects = attemptSideEffectHooks(
+      () => {
+        state.toolsExecuted = true
+      },
+      (step) => {
+        state.stepUsages.push(step.usage)
+      }
+    )
     const common = {
       model,
       instructions: options.system || undefined,
@@ -712,15 +769,16 @@ export class AiManager {
       tools: this.prepareTools(options, state),
       stopWhen: options.stopWhen ?? (options.maxSteps ? stepCountIs(options.maxSteps) : undefined),
       maxRetries: options.maxRetries,
-      onStepFinish: options.onStepFinish
-        ? async (step: StepResult<ToolSet>) => {
-            try {
-              await options.onStepFinish?.(step)
-            } catch (err) {
-              this.logger?.warn?.(`[AiManager] onStepFinish callback failed: ${String(err)}`)
-            }
-          }
-        : undefined,
+      onToolExecutionStart: sideEffects.onToolExecutionStart,
+      onStepEnd: async (step: StepResult<ToolSet>) => {
+        sideEffects.onStepEnd(step)
+        if (!options.onStepFinish) return
+        try {
+          await options.onStepFinish(step)
+        } catch (err) {
+          this.logger?.warn?.(`[AiManager] onStepFinish callback failed: ${String(err)}`)
+        }
+      },
       abortSignal: signal,
     }
 
@@ -847,7 +905,12 @@ export class AiManager {
         let accounted = false
         let streamStarted = false
 
-        const finish = (usage: TokenUsage, text: string, finishReason?: string): void => {
+        const finish = (
+          usage: TokenUsage,
+          text: string,
+          finishReason?: string,
+          extraMetadata: Record<string, unknown> = {}
+        ): void => {
           if (attemptFailed || accounted) return
           accounted = true
           void (async () => {
@@ -860,7 +923,7 @@ export class AiManager {
                 usage,
                 Date.now() - startTime,
                 pricingReady,
-                { finishReason, ...options.metadata }
+                { finishReason, ...options.metadata, ...extraMetadata }
               )
               this.warnIfOverBudget(agentName, usage.totalTokens, costUsd)
             }
@@ -883,10 +946,15 @@ export class AiManager {
           onError: ({ error }) => {
             if (!streamStarted) return // surfaced through the first-part check below
             this.logger?.warn?.(`[AiManager] Stream error on "${breakerKey}": ${String(error)}`)
-            if (classifyError(error, signal).countsAsFailure) {
+            const classification = classifyError(error, signal)
+            if (classification.countsAsFailure) {
               this.circuitBreaker.recordFailure(breakerKey, error)
             }
-            finish(EMPTY_USAGE, '')
+            // The steps that finished before the error still consumed tokens.
+            finish(sumUsage(state.stepUsages), '', undefined, {
+              failed: true,
+              errorClass: classification.errorClass,
+            })
           },
           onEnd: (event) => finish(normalizeUsage(event.totalUsage), event.text, event.finishReason),
           onAbort: (event) => finish(sumUsage(event.steps.map((s) => s.usage)), ''),
@@ -1002,7 +1070,7 @@ export class AiManager {
     )
 
     const durationMs = Date.now() - startTime
-    // `totalUsage` sums every step of a tool loop; `usage` is the last step only.
+    // `usage` is the sum over every step of a tool loop (AI SDK 7); `totalUsage` is its deprecated alias.
     const usage = normalizeUsage(result.totalUsage ?? result.usage)
     const costUsd = await this.recordCost(
       agentName,

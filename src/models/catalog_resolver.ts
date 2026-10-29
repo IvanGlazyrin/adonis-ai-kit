@@ -2,7 +2,7 @@ import { buildAcpRuntimeConfig } from '../acp/acp_agents.js'
 import type { AcpRuntimeOptions } from '../acp/types.js'
 import type { ModelsDevCatalog } from '../catalog/models_dev.js'
 import { parseModelRef } from './model_ref.js'
-import { resolveProviderNpm } from './protocols.js'
+import { ACP_NPM, resolveProviderNpm } from './protocols.js'
 import type { ResolvedModel } from './types.js'
 
 export interface ModelResolver {
@@ -19,8 +19,6 @@ export interface CatalogModelResolverOptions {
   getApiKey?: (envNames: string[]) => string | undefined
   acp?: AcpRuntimeOptions
 }
-
-const ACP_NPM = '@mcpc-tech/acp-ai-provider'
 
 function firstEnvValue(envNames: string[]): string | undefined {
   for (const name of envNames) {

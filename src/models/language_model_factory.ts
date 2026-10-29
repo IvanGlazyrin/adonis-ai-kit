@@ -2,6 +2,7 @@ import type { LanguageModel } from 'ai'
 import { AcpDriver } from '../acp/provider.js'
 import type { AcpAgentRuntimeConfig, AcpPermissionPolicy } from '../acp/types.js'
 import { ProviderConfigError } from '../errors.js'
+import { ACP_NPM } from './protocols.js'
 import type { ConfirmationService } from '../guard/confirmation.js'
 import type { Logger } from '../logger.js'
 import { ProviderFactoryRegistry } from './provider_factories.js'
@@ -22,7 +23,6 @@ export interface LanguageModelFactoryOptions {
   }
 }
 
-const ACP_NPM = '@mcpc-tech/acp-ai-provider'
 const DEFAULT_TIMEOUT_MS = 180_000
 
 function redactHeaders(headers?: Record<string, string>): Record<string, string> | undefined {

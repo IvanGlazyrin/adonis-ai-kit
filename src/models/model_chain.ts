@@ -4,6 +4,7 @@ import { ProviderConfigError, ProviderUnavailableError } from '../errors.js'
 import type { Logger } from '../logger.js'
 import type { ModelResolver } from './catalog_resolver.js'
 import { breakerKeyFor, modelKeyFor } from './keys.js'
+import { ACP_NPM } from './protocols.js'
 import type { ResolvedModel } from './types.js'
 
 export type ChainCandidate =
@@ -93,7 +94,8 @@ export interface ModelChainOptions {
  * Runs `attempt` against each candidate in order until one succeeds. Each candidate is guarded by a
  * per-credential circuit breaker; a retryable failure, or a candidate that cannot be attempted (missing provider
  * package, config error, open breaker), moves on to the next candidate; anything else, any failure after tools ran
- * and any caller abort is thrown. An exhausted chain rethrows the last error.
+ * and any caller abort is thrown. A retryable failure of an ACP agent is thrown too: the agent may have run
+ * side effects inside its own call (fail-closed). An exhausted chain rethrows the last error.
  */
 export async function runModelChain<T>(
   candidates: ChainCandidate[],
@@ -139,6 +141,7 @@ export async function runModelChain<T>(
 
         const next = fallbackTarget({
           candidate,
+          model,
           classification,
           toolsExecuted,
           next: nextAvailable(candidates, i + 1, breaker),
@@ -183,23 +186,26 @@ function acquireCandidate(
 
 /**
  * The candidate to fall back to. Throws the attempt's own error, after logging why, when the failure
- * may not fall back: a non-retryable failure, a failure after tools ran, or no candidate left.
+ * may not fall back: a non-retryable failure, a failure after tools ran, a retryable failure of an ACP agent
+ * (its call may have run side effects), or no candidate left.
  */
 function fallbackTarget(input: {
   candidate: ChainCandidate
+  model: ResolvedModel
   classification: ErrorClassification
   toolsExecuted: boolean
   next: ChainCandidate | null
   error: unknown
   logger: Logger | undefined
 }): ChainCandidate {
-  const { candidate, classification, toolsExecuted, next, error, logger } = input
+  const { candidate, model, classification, toolsExecuted, next, error, logger } = input
   const canFallBack = classification.kind === 'retryable' || classification.kind === 'skip'
-  if (canFallBack && !toolsExecuted && next) return next
+  const acpCallFailed = classification.kind === 'retryable' && model.npm === ACP_NPM
+  if (canFallBack && !toolsExecuted && !acpCallFailed && next) return next
 
   logger?.warn(
     `[model-chain] ${candidate.key} failed with ${classification.errorClass}; not falling back ` +
-      `(kind=${classification.kind}, toolsExecuted=${toolsExecuted}, hasNext=${Boolean(next)})`
+      `(kind=${classification.kind}, toolsExecuted=${toolsExecuted}, acpCallFailed=${acpCallFailed}, hasNext=${Boolean(next)})`
   )
   throw error
 }

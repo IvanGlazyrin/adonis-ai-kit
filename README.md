@@ -17,12 +17,12 @@ While frameworks like **Laravel AI** and **Prism** bring basic prompt-level abst
 
 | Feature | `adonis-ai-kit` (AdonisJS 7) | Laravel AI / Prism (PHP) |
 | :--- | :--- | :--- |
-| **Foundation Engine** | **Vercel AI SDK v7** (native Node.js async streams & tool calls) | Custom cURL/Guzzle wrappers |
+| **Foundation Engine** | **Vercel AI SDK v7** (native Node.js async streams & tool calls) | Hand-written provider drivers on the Laravel HTTP client |
 | **Circuit Breaker** | **Per `provider:model` key** (isolated half-open state, probe limits) | Global or none |
-| **Cascading Fallbacks** | **Safe**: never replays side-effects if tool calls already started | Retries from scratch (risk of double actions) |
-| **Tool Security (Guardrails)** | **Fail-closed** with Human-in-the-Loop (HITL), concurrent slots | Basic parameter mapping |
-| **Token Budget & Cost** | **Live USD pricing**, ring-buffer memory, cache-read & reasoning tokens | Raw token count or static tables |
-| **Catalog Auto-Discovery** | **models.dev integration** with TTL cache & atomic writes | Static configuration files |
+| **Cascading Fallbacks** | No fallback once a local tool has run; provider-executed tools and ACP agents: see docs | Non-streaming failover re-runs the call, including executed tools (`Promptable::withModelFailover`); streaming stops failover after the first output |
+| **Tool Security (Guardrails)** | Fail-closed `ToolRegistry` (default `deny`); in-process HITL for `ask` tools. `AiManager` tools default to `allow` | Opt-in, persisted tool approvals; `Stop` middleware |
+| **Token Budget & Cost** | **Live USD pricing**, ring-buffer memory, cache-read & reasoning tokens | Token counts only, no cost tracking |
+| **Catalog Auto-Discovery** | **models.dev integration** with TTL cache & atomic writes | Defaults hard-coded per provider class plus `config/ai.php`; no live catalog |
 | **Agent Protocols** | **ACP (Agent Client Protocol)** for Claude Code, opencode & subagents | Basic prompt templates |
 | **HTTP Streaming** | **`response.streamAI()` macro** with heartbeats, SSE frames & client-abort hook | PHP chunked response buffers |
 
@@ -132,6 +132,8 @@ console.log(`Tokens: in=${result.usage.inputTokens}, out=${result.usage.outputTo
 ```
 
 If OpenAI returns `429 Rate Limit` or `503 Service Unavailable`, `adonis-ai-kit` automatically routes the request to `anthropic` with its configured model, recording circuit breaker metrics. A `prompt_too_long` failure also moves on to the next model, but never counts against (or opens) the circuit breaker.
+
+Fallback is refused once a side effect may already have happened: after a local tool has run, after a provider-executed tool call (for example a server-side web search) has been made, and after a retryable failure of an ACP agent (its call may have run tools inside the agent). Such failures are thrown as is; this is fail-closed, so an ACP timeout does not switch to another model. This applies to `AiManager` and to `runModelChain`; direct calls to the AI SDK need `attemptSideEffectHooks`. Tokens a failed attempt consumed are recorded in the cost tracker with `failed: true`.
 
 ---
 
@@ -324,8 +326,8 @@ result.model    // its modelID
 ```
 
 - Entries are tried in order. Retryable failures (429, 5xx, network) and entries that cannot be attempted (missing provider
-  package, config error, open breaker) move on to the next entry; bad requests, caller aborts and any failure after a
-  tool has run are thrown as is. `streamText` falls back on errors before the first chunk.
+  package, config error, open breaker) move on to the next entry; bad requests, caller aborts, any failure after a
+  tool has run and a retryable failure of an ACP agent are thrown as is. `streamText` falls back on errors before the first chunk.
 - Each entry has its own circuit breaker, keyed by `credentialKey` when present (so one bad key doesn't block the others).
 - String entries are resolved through `config.resolver` (e.g. a `CatalogModelResolver`); without one a `ProviderConfigError` is thrown.
 - Models are built by `config.languageModels` (a `LanguageModelFactory`); when absent a default one is created lazily.
@@ -356,7 +358,7 @@ npm run test:regression
 
 - **Token Budget**: Rate calculations, cache-read discounts, reasoning token surcharges, ring-buffer bounded memory.
 - **Tool Guard**: Policy enforcement (`allow`, `ask`, `deny`), concurrency slots, fail-closed handlers, session validation.
-- **Adonis AI Core**: Cascading failovers without duplicate side-effects, SSE keepalive frames, models.dev live discovery & TTL, ACP command sanitization.
+- **Adonis AI Core**: Cascading failovers with no fallback once a local tool has run (provider-executed tools and ACP agents: see docs), SSE keepalive frames, models.dev live discovery & TTL, ACP command sanitization.
 
 ---
 
