@@ -246,32 +246,23 @@ export function classifyError(error: unknown, abortSignal?: AbortSignal): ErrorC
   return outcome('fatal', 'unclassified error')
 }
 
+const FRIENDLY_MESSAGES: Record<ErrorClass, string> = {
+  rate_limit: 'Rate limited by API provider',
+  overloaded: 'API provider overloaded',
+  timeout: 'API request timed out',
+  auth_error: 'API authentication failed — check API key',
+  model_not_found: 'Model not found — check LLM_MODEL config',
+  prompt_too_long: 'Context too large for model — consider compaction',
+  invalid_request: 'Invalid API request',
+  server_error: 'API server error',
+  network_error: 'Network error — check connectivity',
+  no_output_generated: 'Model produced no output — transient error, will retry',
+  unknown: 'Unknown API error',
+}
+
 /**
  * Human-readable message for an error class, safe to show to an operator.
  */
 export function getUserFriendlyMessage(errorClass: ErrorClass): string {
-  switch (errorClass) {
-    case 'rate_limit':
-      return 'Rate limited by API provider'
-    case 'overloaded':
-      return 'API provider overloaded'
-    case 'timeout':
-      return 'API request timed out'
-    case 'auth_error':
-      return 'API authentication failed — check API key'
-    case 'model_not_found':
-      return 'Model not found — check LLM_MODEL config'
-    case 'prompt_too_long':
-      return 'Context too large for model — consider compaction'
-    case 'invalid_request':
-      return 'Invalid API request'
-    case 'server_error':
-      return 'API server error'
-    case 'network_error':
-      return 'Network error — check connectivity'
-    case 'no_output_generated':
-      return 'Model produced no output — transient error, will retry'
-    default:
-      return 'Unknown API error'
-  }
+  return Object.hasOwn(FRIENDLY_MESSAGES, errorClass) ? FRIENDLY_MESSAGES[errorClass] : FRIENDLY_MESSAGES.unknown
 }
