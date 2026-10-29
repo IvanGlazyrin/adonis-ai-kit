@@ -4,7 +4,7 @@ import { CostTracker } from './budget/cost_tracker.js'
 import type { ModelPricing } from './budget/types.js'
 import { ConfirmationService } from './guard/confirmation.js'
 import { ToolRegistry } from './guard/registry.js'
-import type { ToolDefinition } from './guard/types.js'
+import type { ToolDefinition, ToolPermission } from './guard/types.js'
 import { CircuitBreaker } from './circuit_breaker.js'
 import {
   AiException,
@@ -177,6 +177,11 @@ const SDK_DRIVERS: Record<string, SdkDriverSpec> = {
 
 
 const PRICING_WAIT_MS = 2_000
+
+/** A tool with no explicit permission is allowed. */
+function toolPermission(permissions: Record<string, ToolPermission> | undefined, name: string): ToolPermission {
+  return permissions && Object.hasOwn(permissions, name) ? permissions[name] : 'allow'
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -575,40 +580,48 @@ export class AiManager {
     const tools = options.tools
     if (!tools || Object.keys(tools).length === 0) return undefined
 
-    const permissions = options.toolPermissions
-    const guardOptions = options.toolGuard
     const prepared: Record<string, ToolDefinition> = {}
-
     for (const [name, tool] of Object.entries(tools)) {
-      const permission =
-        permissions && Object.hasOwn(permissions, name) ? permissions[name] : 'allow'
+      const permission = toolPermission(options.toolPermissions, name)
       if (permission === 'deny') continue
 
-      let candidate = tool as unknown as ToolDefinition
-      const original = candidate.execute?.bind(candidate)
-      if (original) {
-        candidate = {
-          ...candidate,
-          execute: (args: unknown, execOptions?: unknown) => {
-            state.toolsExecuted = true
-            return original(args, execOptions)
-          },
-        }
-      }
-
-      if (permission === 'ask' || guardOptions?.guard) {
-        candidate = this.toolRegistry.wrapTool(name, candidate, {
-          permission,
-          guard: guardOptions?.guard,
-          confirmation: guardOptions?.confirmation ?? this.confirmation,
-          sessionId: guardOptions?.sessionId,
-          timeoutMs: guardOptions?.timeoutMs,
-        })
+      let candidate = this.trackExecution(tool as unknown as ToolDefinition, state)
+      if (permission === 'ask' || options.toolGuard?.guard) {
+        candidate = this.guardTool(name, candidate, permission, options.toolGuard)
       }
       prepared[name] = candidate
     }
 
     return Object.keys(prepared).length > 0 ? (prepared as unknown as ToolSet) : undefined
+  }
+
+  /** Marks the attempt as having run tools, so the chain never falls back after a side effect. */
+  private trackExecution(tool: ToolDefinition, state: AttemptState): ToolDefinition {
+    const original = tool.execute?.bind(tool)
+    if (!original) return tool
+    return {
+      ...tool,
+      execute: (args: unknown, execOptions?: unknown) => {
+        state.toolsExecuted = true
+        return original(args, execOptions)
+      },
+    }
+  }
+
+  /** Wraps a tool with the guard and, for `ask`, the confirmation service. */
+  private guardTool(
+    name: string,
+    tool: ToolDefinition,
+    permission: ToolPermission,
+    guardOptions: GenerateTextOptions['toolGuard']
+  ): ToolDefinition {
+    return this.toolRegistry.wrapTool(name, tool, {
+      permission,
+      guard: guardOptions?.guard,
+      confirmation: guardOptions?.confirmation ?? this.confirmation,
+      sessionId: guardOptions?.sessionId,
+      timeoutMs: guardOptions?.timeoutMs,
+    })
   }
 
   private buildTextParams(
