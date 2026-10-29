@@ -5,10 +5,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [1.2.1] - 2026-10-29
 
+### Added
+
+- Built-in pricing for `gpt-6-sol`, `gpt-6-astra`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `claude-fable-5-1`, `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`, `gemini-3.5-flash`, `gemini-3.5-flash-lite` and `gpt-oss-120b`, including OpenAI cache-write prices.
+- The built-in fallback catalog (used when models.dev cannot be reached) lists `gpt-6-sol`, `claude-sonnet-5-5`, `gemini-3.5-flash` and `openai/gpt-oss-120b`.
+
 ### Changed
 
 - The built-in SDK drivers' default model (used when the provider config sets no `defaultModel`) moved off retired IDs: OpenAI `gpt-4o` -> `gpt-6-sol`, Anthropic `claude-3-7-sonnet-latest` -> `claude-sonnet-5-5`, Google/Gemini `gemini-2.5-flash` -> `gemini-3.5-flash`, Groq `llama-3.3-70b-versatile` -> `openai/gpt-oss-120b`. Set `defaultModel` in the provider config to pin a model.
-- Model prices come from models.dev at runtime (`catalog.autoPricing`, on by default) and take priority over the built-in pricing table. The table and the built-in fallback catalog are an offline fallback only and get no new models; a model priced nowhere is costed at $0 with a one-time warning. For a model that models.dev does not price, set one with `CostTracker.setPricing()`.
+- Model prices come from models.dev at runtime (`catalog.autoPricing`, on by default) and take priority over the built-in pricing table. The table and the fallback catalog are checked against models.dev (snapshot 2026-10-29) and used when models.dev has no price. A model priced nowhere costs $0 with a one-time warning; set its price with `CostTracker.setPricing()`.
 - Internal structure split into smaller functions, with no behavior change.
 
 ### Fixed

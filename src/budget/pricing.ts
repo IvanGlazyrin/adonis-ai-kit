@@ -4,11 +4,9 @@ import type { ModelPricing, TokenUsageDetails } from './types.js'
  * Default pricing catalog for popular LLM models (USD per 1M tokens).
  *
  * Prices drift: treat this table as a fallback and prefer `CostTracker.setPricing()` /
- * `registerPricingLoader()` (e.g. backed by models.dev) for authoritative values.
- *
- * This is an offline fallback, not a source of truth. With `catalog.autoPricing` on (the default),
- * models.dev prices are loaded at runtime and take priority over this table. Do not add new models
- * here; a model with no price anywhere is costed at $0 with a one-time warning.
+ * `registerPricingLoader()` (e.g. backed by models.dev) for authoritative values. With
+ * `catalog.autoPricing` on (the default), models.dev prices take priority over this table.
+ * Entries were checked against models.dev on 2026-10-29; re-check them when a price changes.
  */
 export const DEFAULT_MODEL_PRICING: Readonly<Record<string, ModelPricing>> = Object.freeze({
   // OpenAI
@@ -23,8 +21,18 @@ export const DEFAULT_MODEL_PRICING: Readonly<Record<string, ModelPricing>> = Obj
   'o3': { input: 2.0, output: 8.0, cacheReadCostPer1M: 0.5 },
   'o3-mini': { input: 1.1, output: 4.4, cacheReadCostPer1M: 0.55 },
   'o4-mini': { input: 1.1, output: 4.4, cacheReadCostPer1M: 0.275 },
+  'gpt-6-sol': { input: 2.0, output: 10.0, cacheReadCostPer1M: 0.2, cacheWriteCostPer1M: 2.5 },
+  'gpt-6-astra': { input: 10.0, output: 50.0, cacheReadCostPer1M: 1.0, cacheWriteCostPer1M: 12.5 },
+  'gpt-6-luna': { input: 0.1, output: 0.5, cacheReadCostPer1M: 0.01, cacheWriteCostPer1M: 0.125 },
+  'gpt-5.6-sol': { input: 4.0, output: 20.0, cacheReadCostPer1M: 0.4, cacheWriteCostPer1M: 5.0 },
+  'gpt-5.6-terra': { input: 2.0, output: 12.0, cacheReadCostPer1M: 0.2, cacheWriteCostPer1M: 2.5 },
+  'gpt-5.6-luna': { input: 0.2, output: 1.2, cacheReadCostPer1M: 0.02, cacheWriteCostPer1M: 0.25 },
 
   // Anthropic (cache read = 0.1x input, 5-minute cache write = 1.25x input)
+  'claude-fable-5-1': { input: 10.0, output: 50.0, cacheReadCostPer1M: 0.25, cacheWriteCostPer1M: 12.5 },
+  'claude-opus-5-5': { input: 4.0, output: 20.0, cacheReadCostPer1M: 0.2, cacheWriteCostPer1M: 5.0 },
+  'claude-sonnet-5-5': { input: 2.0, output: 10.0, cacheReadCostPer1M: 0.1, cacheWriteCostPer1M: 2.5 },
+  'claude-haiku-5-5': { input: 0.1, output: 0.5, cacheReadCostPer1M: 0.01, cacheWriteCostPer1M: 0.125 },
   'claude-opus-4-1': { input: 15.0, output: 75.0, cacheReadCostPer1M: 1.5, cacheWriteCostPer1M: 18.75 },
   'claude-opus-4': { input: 15.0, output: 75.0, cacheReadCostPer1M: 1.5, cacheWriteCostPer1M: 18.75 },
   'claude-sonnet-4-5': { input: 3.0, output: 15.0, cacheReadCostPer1M: 0.3, cacheWriteCostPer1M: 3.75 },
@@ -37,6 +45,8 @@ export const DEFAULT_MODEL_PRICING: Readonly<Record<string, ModelPricing>> = Obj
   'claude-3-opus': { input: 15.0, output: 75.0, cacheReadCostPer1M: 1.5, cacheWriteCostPer1M: 18.75 },
 
   // Google (prices for prompts <= 200k tokens; reasoning is billed as output)
+  'gemini-3.5-flash': { input: 1.5, output: 9.0, cacheReadCostPer1M: 0.15 },
+  'gemini-3.5-flash-lite': { input: 0.3, output: 2.5, cacheReadCostPer1M: 0.03 },
   'gemini-2.5-pro': { input: 1.25, output: 10.0, cacheReadCostPer1M: 0.31 },
   'gemini-2.5-flash': { input: 0.3, output: 2.5, cacheReadCostPer1M: 0.075 },
   'gemini-2.5-flash-lite': { input: 0.1, output: 0.4, cacheReadCostPer1M: 0.025 },
@@ -46,6 +56,7 @@ export const DEFAULT_MODEL_PRICING: Readonly<Record<string, ModelPricing>> = Obj
   'gemini-1.5-flash': { input: 0.075, output: 0.3 },
 
   // Groq / Open-source / Meta
+  'gpt-oss-120b': { input: 0.15, output: 0.6, cacheReadCostPer1M: 0.075 },
   'llama-3.3-70b-versatile': { input: 0.59, output: 0.79 },
   'llama-3.3-70b': { input: 0.59, output: 0.79 },
   'llama-3.1-70b': { input: 0.59, output: 0.79 },

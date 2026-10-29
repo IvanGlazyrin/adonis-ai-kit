@@ -726,6 +726,15 @@ export class ModelsDevSource {
         protocol: 'openai',
         npm: '@ai-sdk/openai',
         models: {
+          'gpt-6-sol': {
+            id: 'gpt-6-sol',
+            name: 'GPT-6 Sol',
+            tool_call: true,
+            structured_output: true,
+            reasoning: true,
+            limit: { context: 1_050_000, output: 128_000 },
+            cost: costOf('gpt-6-sol'),
+          },
           'gpt-4o': {
             id: 'gpt-4o',
             name: 'GPT-4o',
@@ -778,6 +787,15 @@ export class ModelsDevSource {
         protocol: 'anthropic',
         npm: '@ai-sdk/anthropic',
         models: {
+          'claude-sonnet-5-5': {
+            id: 'claude-sonnet-5-5',
+            name: 'Claude Sonnet 5.5',
+            tool_call: true,
+            structured_output: true,
+            reasoning: true,
+            limit: { context: 1_000_000, output: 128_000 },
+            cost: costOf('claude-sonnet-5-5'),
+          },
           'claude-3-7-sonnet-latest': {
             id: 'claude-3-7-sonnet-latest',
             name: 'Claude 3.7 Sonnet',
@@ -813,6 +831,15 @@ export class ModelsDevSource {
         protocol: 'google',
         npm: '@ai-sdk/google',
         models: {
+          'gemini-3.5-flash': {
+            id: 'gemini-3.5-flash',
+            name: 'Gemini 3.5 Flash',
+            tool_call: true,
+            structured_output: true,
+            reasoning: true,
+            limit: { context: 1_048_576, output: 65_536 },
+            cost: costOf('gemini-3.5-flash'),
+          },
           'gemini-2.5-flash': {
             id: 'gemini-2.5-flash',
             name: 'Gemini 2.5 Flash',
@@ -857,6 +884,15 @@ export class ModelsDevSource {
         protocol: 'openai',
         npm: '@ai-sdk/groq',
         models: {
+          'openai/gpt-oss-120b': {
+            id: 'openai/gpt-oss-120b',
+            name: 'GPT OSS 120B',
+            tool_call: true,
+            structured_output: true,
+            reasoning: true,
+            limit: { context: 131_072, output: 65_536 },
+            cost: costOf('gpt-oss-120b'),
+          },
           'llama-3.3-70b-versatile': {
             id: 'llama-3.3-70b-versatile',
             name: 'Llama 3.3 70B',
