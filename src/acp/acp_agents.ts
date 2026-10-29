@@ -206,21 +206,35 @@ export function normalizeMcpServer(input: unknown): AcpMcpServerConfig | null {
   const raw = input as Record<string, unknown>
   if (typeof raw.name !== 'string' || raw.name.length === 0) return null
 
-  const url =
-    typeof raw.url === 'string' ? raw.url : typeof raw.httpUrl === 'string' ? raw.httpUrl : undefined
-  if (raw.type === 'http' || raw.type === 'sse' || (raw.type === undefined && url && !raw.command)) {
-    if (!url) return null
-    return {
-      type: raw.type === 'sse' ? 'sse' : 'http',
-      name: raw.name,
-      url,
-      headers: toNameValueList(raw.headers),
-    }
-  }
+  return isRemoteDefinition(raw) ? normalizeRemoteServer(raw, raw.name) : normalizeStdioServer(raw, raw.name)
+}
 
+/** A remote server declares `type` http or sse, or has a URL and no command. */
+function isRemoteDefinition(raw: Record<string, unknown>): boolean {
+  const url = remoteUrl(raw)
+  return raw.type === 'http' || raw.type === 'sse' || (raw.type === undefined && Boolean(url) && !raw.command)
+}
+
+function remoteUrl(raw: Record<string, unknown>): string | undefined {
+  if (typeof raw.url === 'string') return raw.url
+  return typeof raw.httpUrl === 'string' ? raw.httpUrl : undefined
+}
+
+function normalizeRemoteServer(raw: Record<string, unknown>, name: string): AcpMcpServerConfig | null {
+  const url = remoteUrl(raw)
+  if (!url) return null
+  return {
+    type: raw.type === 'sse' ? 'sse' : 'http',
+    name,
+    url,
+    headers: toNameValueList(raw.headers),
+  }
+}
+
+function normalizeStdioServer(raw: Record<string, unknown>, name: string): AcpMcpServerConfig | null {
   if (typeof raw.command !== 'string' || raw.command.length === 0) return null
   return {
-    name: raw.name,
+    name,
     command: raw.command,
     args: Array.isArray(raw.args) ? raw.args.filter((a): a is string => typeof a === 'string') : [],
     env: toNameValueList(raw.env),
