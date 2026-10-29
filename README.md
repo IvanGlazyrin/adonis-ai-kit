@@ -93,12 +93,12 @@ export default defineConfig({
     openai: {
       driver: 'openai',
       apiKey: env.get('OPENAI_API_KEY'),
-      defaultModel: 'gpt-4o',
+      defaultModel: 'gpt-6-sol',
     },
     anthropic: {
       driver: 'anthropic',
       apiKey: env.get('ANTHROPIC_API_KEY'),
-      defaultModel: 'claude-3-7-sonnet-20250219',
+      defaultModel: 'claude-sonnet-5-5',
     },
   },
   // Automatically fallback to Anthropic if OpenAI is throttled (429) or down (5xx)
@@ -169,7 +169,7 @@ export default class ChatController {
   async stream({ request, response }: HttpContext) {
     const stream = await ai.streamText({
       prompt: request.input('message'),
-      model: 'gpt-4o',
+      model: 'gpt-6-sol',
     })
 
     // Sets 'Content-Type: text/event-stream', sends heartbeat pings,
@@ -317,7 +317,7 @@ Apps with per-user credentials can't use a static provider cascade. Pass `models
 ```ts
 const result = await ai.generateText({
   prompt: 'Summarize this',
-  models: [userKeyModel, teamKeyModel, 'anthropic/claude-sonnet-4-5'],
+  models: [userKeyModel, teamKeyModel, 'anthropic/claude-sonnet-5-5'],
   onFallback: ({ fromModel, toModel, errorClass }) => log.warn(`${fromModel} -> ${toModel} (${errorClass})`),
 })
 result.provider // providerID of the model that answered
