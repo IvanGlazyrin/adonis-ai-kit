@@ -135,15 +135,23 @@ export class AgentLoader {
       this.logger?.warn?.(`[AgentLoader] Refusing unsafe skill name: ${JSON.stringify(skillName)}`)
       return ''
     }
-    try {
-      if (fs.existsSync(skillPath)) {
-        return fs.readFileSync(skillPath, 'utf-8').trim()
-      }
-    } catch (err: unknown) {
-      this.logger?.warn?.(`[AgentLoader] Failed to read skill file "${skillPath}": ${err instanceof Error ? err.message : String(err)}`)
-    }
+
+    const text = this.readSkillFile(skillPath)
+    if (text !== null) return text
+
     this.logger?.warn?.(`[AgentLoader] Skill not found: ${skillName} at ${skillPath}`)
     return ''
+  }
+
+  /** The trimmed text of a skill file; `null` when it is absent or cannot be read (a read failure is logged). */
+  private readSkillFile(skillPath: string): string | null {
+    try {
+      if (!fs.existsSync(skillPath)) return null
+      return fs.readFileSync(skillPath, 'utf-8').trim()
+    } catch (err: unknown) {
+      this.logger?.warn?.(`[AgentLoader] Failed to read skill file "${skillPath}": ${err instanceof Error ? err.message : String(err)}`)
+      return null
+    }
   }
 
   async loadAgentPrompt(
