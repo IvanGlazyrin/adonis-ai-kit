@@ -82,6 +82,19 @@ function sanitizeCatalog(json: unknown): ModelsDevCatalog | null {
   return Object.keys(catalog).length > 0 ? catalog : null
 }
 
+interface CacheValidators {
+  etag: string | null
+  lastModified: string | null
+}
+
+/** Conditional request headers for the validators we have; `undefined` when there are none. */
+function conditionalHeaders({ etag, lastModified }: CacheValidators): Record<string, string> | undefined {
+  const headers: Record<string, string> = {}
+  if (etag) headers['If-None-Match'] = etag
+  if (lastModified) headers['If-Modified-Since'] = lastModified
+  return Object.keys(headers).length ? headers : undefined
+}
+
 function toCatalogCost(pricing: ModelPricing): ModelsDevModelCost {
   return {
     input: pricing.input,
@@ -510,81 +523,87 @@ export class ModelsDevSource {
     }
   }
 
+  /** Two attempts; a failed attempt is logged and retried after a short backoff. */
   async #fetchRemote(cachePath: string): Promise<ModelsDevCatalog | null> {
     this.#logger?.info?.('[ModelsDevSource] fetching catalog from models.dev...')
 
     const etagPath = `${cachePath}.etag`
-    let etag: string | null = null
-    let lastModified: string | null = null
-    try {
-      const meta = JSON.parse(await readFile(etagPath, 'utf-8'))
-      etag = typeof meta.etag === 'string' ? meta.etag : null
-      lastModified = typeof meta.lastModified === 'string' ? meta.lastModified : null
-    } catch {
-      // no previous metadata
-    }
+    const validators = await this.#readValidators(etagPath)
 
     let lastError: Error | undefined
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
-        const headers: Record<string, string> = {}
-        if (etag) headers['If-None-Match'] = etag
-        if (lastModified) headers['If-Modified-Since'] = lastModified
-
-        const response = await fetch(MODELS_DEV_URL, {
-          signal: AbortSignal.timeout(6_000),
-          headers: Object.keys(headers).length ? headers : undefined,
-        })
-
-        if (response.status === 304) {
-          this.#logger?.info?.('[ModelsDevSource] 304 Not Modified — using local cache')
-          const cached = await this.#readLocalCache(cachePath)
-          if (cached) {
-            // Restart the TTL clock of the unchanged file
-            const now = new Date()
-            await utimes(cachePath, now, now).catch(() => {})
-            return cached
-          }
-          throw new Error('Received 304 but local cache file was missing')
-        }
-
-        if (!response.ok) {
-          throw new Error(`Failed to fetch models.dev: ${response.status} ${response.statusText}`)
-        }
-
-        const data = sanitizeCatalog(await response.json())
-        if (!data) {
-          throw new Error('Invalid models.dev response: no valid providers')
-        }
-
-        await this.#writeAtomic(cachePath, JSON.stringify(data))
-
-        const newEtag = response.headers.get('etag')
-        const newLastMod = response.headers.get('last-modified')
-        if (newEtag || newLastMod) {
-          await this.#writeAtomic(
-            etagPath,
-            JSON.stringify({ etag: newEtag, lastModified: newLastMod })
-          ).catch(() => {})
-        }
-
-        this.#logger?.info?.(`[ModelsDevSource] successfully updated catalog at ${cachePath}`)
-        return data
+        return await this.#fetchAttempt(cachePath, etagPath, validators)
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err))
-        this.#logger?.warn?.(
-          `[ModelsDevSource] fetch attempt ${attempt} failed: ${lastError.message}`
-        )
+        this.#logger?.warn?.(`[ModelsDevSource] fetch attempt ${attempt} failed: ${lastError.message}`)
         if (attempt < 2) {
           await new Promise((resolve) => setTimeout(resolve, 300 * attempt))
         }
       }
     }
 
-    this.#logger?.warn?.(
-      `[ModelsDevSource] all network attempts failed. Error: ${lastError?.message}`
-    )
+    this.#logger?.warn?.(`[ModelsDevSource] all network attempts failed. Error: ${lastError?.message}`)
     return null
+  }
+
+  /** One request. Throws on any failure, including a 304 with no local copy to serve. */
+  async #fetchAttempt(
+    cachePath: string,
+    etagPath: string,
+    validators: CacheValidators
+  ): Promise<ModelsDevCatalog> {
+    const response = await fetch(MODELS_DEV_URL, {
+      signal: AbortSignal.timeout(6_000),
+      headers: conditionalHeaders(validators),
+    })
+
+    if (response.status === 304) return this.#useNotModified(cachePath)
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch models.dev: ${response.status} ${response.statusText}`)
+    }
+
+    const data = sanitizeCatalog(await response.json())
+    if (!data) {
+      throw new Error('Invalid models.dev response: no valid providers')
+    }
+
+    await this.#writeAtomic(cachePath, JSON.stringify(data))
+    await this.#saveValidators(etagPath, response)
+
+    this.#logger?.info?.(`[ModelsDevSource] successfully updated catalog at ${cachePath}`)
+    return data
+  }
+
+  async #readValidators(etagPath: string): Promise<CacheValidators> {
+    try {
+      const meta = JSON.parse(await readFile(etagPath, 'utf-8'))
+      return {
+        etag: typeof meta.etag === 'string' ? meta.etag : null,
+        lastModified: typeof meta.lastModified === 'string' ? meta.lastModified : null,
+      }
+    } catch {
+      return { etag: null, lastModified: null } // no previous metadata
+    }
+  }
+
+  async #saveValidators(etagPath: string, response: Response): Promise<void> {
+    const etag = response.headers.get('etag')
+    const lastModified = response.headers.get('last-modified')
+    if (etag || lastModified) {
+      await this.#writeAtomic(etagPath, JSON.stringify({ etag, lastModified })).catch(() => {})
+    }
+  }
+
+  async #useNotModified(cachePath: string): Promise<ModelsDevCatalog> {
+    this.#logger?.info?.('[ModelsDevSource] 304 Not Modified — using local cache')
+    const cached = await this.#readLocalCache(cachePath)
+    if (!cached) throw new Error('Received 304 but local cache file was missing')
+    // Restart the TTL clock of the unchanged file
+    const now = new Date()
+    await utimes(cachePath, now, now).catch(() => {})
+    return cached
   }
 
   #injectSystemProviders(catalog: ModelsDevCatalog): ModelsDevCatalog {
