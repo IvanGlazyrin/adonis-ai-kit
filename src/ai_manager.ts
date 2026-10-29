@@ -736,16 +736,21 @@ export class AiManager {
   }
 
   private warnIfOverBudget(agentName: string, totalTokens: number, costUsd?: number): void {
-    const budget = this.config.budget
-    if (budget?.maxTokensPerRequest && totalTokens > budget.maxTokensPerRequest) {
-      this.logger?.warn?.(
-        `[AiManager] Token limit exceeded for ${agentName}: ${totalTokens} > ${budget.maxTokensPerRequest}`
-      )
+    this.warnIfOverTokenLimit(agentName, totalTokens)
+    if (costUsd !== undefined) this.warnIfOverCostLimit(agentName, costUsd)
+  }
+
+  private warnIfOverTokenLimit(agentName: string, totalTokens: number): void {
+    const limit = this.config.budget?.maxTokensPerRequest
+    if (limit && totalTokens > limit) {
+      this.logger?.warn?.(`[AiManager] Token limit exceeded for ${agentName}: ${totalTokens} > ${limit}`)
     }
-    if (costUsd !== undefined && budget?.maxCostPerRequestUsd && costUsd > budget.maxCostPerRequestUsd) {
-      this.logger?.warn?.(
-        `[AiManager] Cost limit exceeded for ${agentName}: $${costUsd} > $${budget.maxCostPerRequestUsd}`
-      )
+  }
+
+  private warnIfOverCostLimit(agentName: string, costUsd: number): void {
+    const limit = this.config.budget?.maxCostPerRequestUsd
+    if (limit && costUsd > limit) {
+      this.logger?.warn?.(`[AiManager] Cost limit exceeded for ${agentName}: $${costUsd} > $${limit}`)
     }
   }
 
