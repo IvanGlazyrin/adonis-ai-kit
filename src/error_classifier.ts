@@ -208,42 +208,56 @@ export function countsAsBreakerFailure(errorClass: ErrorClass): boolean {
  * `abortSignal` is the caller's signal: when it is aborted the failure is the caller's doing.
  */
 export function classifyError(error: unknown, abortSignal?: AbortSignal): ErrorClassification {
-  const outcome = (kind: ErrorKind, reason: string, errorClass: ErrorClass = 'unknown'): ErrorClassification => ({
+  const early = classifyWithoutStatus(error, abortSignal)
+  if (early) return early
+
+  const errorClass = classifyErrorClass(error)
+  if (isRetryableError(errorClass)) return outcomeOf('retryable', errorClass, errorClass)
+  if (errorClass !== 'unknown') return outcomeOf('fatal', errorClass, errorClass)
+
+  return classifyUnclassified(error)
+}
+
+function outcomeOf(kind: ErrorKind, reason: string, errorClass: ErrorClass = 'unknown'): ErrorClassification {
+  return {
     kind,
     reason,
     errorClass,
     countsAsFailure: kind === 'retryable' && countsAsBreakerFailure(errorClass),
-  })
+  }
+}
 
-  if (abortSignal?.aborted) return outcome('fatal', 'aborted by caller')
-
-  if (error instanceof ProviderUnavailableError) return outcome('skip', 'circuit breaker open')
+/**
+ * Decisions that need no HTTP analysis: the caller's abort, breaker and dependency states, and values
+ * that are not errors. `null` when the error must be classified by its status and class.
+ */
+function classifyWithoutStatus(error: unknown, abortSignal?: AbortSignal): ErrorClassification | null {
+  if (abortSignal?.aborted) return outcomeOf('fatal', 'aborted by caller')
+  if (error instanceof ProviderUnavailableError) return outcomeOf('skip', 'circuit breaker open')
   if (
     error instanceof AiException &&
     (error.code === 'E_AI_MISSING_DEPENDENCY' || error.code === 'E_AI_CONFIG_ERROR')
   ) {
-    return outcome('skip', error.code)
+    return outcomeOf('skip', error.code)
   }
+  if (error === null || typeof error !== 'object') return outcomeOf('fatal', 'unknown error')
 
-  if (error === null || typeof error !== 'object') return outcome('fatal', 'unknown error')
-  const err = error as Record<string, any>
+  const name = (error as Record<string, any>).name
+  if (name === 'AbortError') return outcomeOf('fatal', 'aborted')
+  if (FATAL_NAMES.has(name)) return outcomeOf('fatal', `validation (${name})`)
+  return null
+}
 
-  if (err.name === 'AbortError') return outcome('fatal', 'aborted')
-  if (FATAL_NAMES.has(err.name)) return outcome('fatal', `validation (${err.name})`)
-
-  const errorClass = classifyErrorClass(error)
-  if (isRetryableError(errorClass)) return outcome('retryable', errorClass, errorClass)
-  if (errorClass !== 'unknown') return outcome('fatal', errorClass, errorClass)
-
-  // Unclassified: keep the loose heuristics, but never override an explicit HTTP status.
+/** Unclassified errors keep the loose heuristics, but never override an explicit HTTP status. */
+function classifyUnclassified(error: unknown): ErrorClassification {
   if (statusOf(error) === undefined) {
+    const err = error as Record<string, any>
     if (NETWORK_MESSAGE.test(typeof err.message === 'string' ? err.message : '')) {
-      return outcome('retryable', 'network', 'network_error')
+      return outcomeOf('retryable', 'network', 'network_error')
     }
-    if (err.isRetryable === true) return outcome('retryable', 'provider marked retryable')
+    if (err.isRetryable === true) return outcomeOf('retryable', 'provider marked retryable')
   }
-
-  return outcome('fatal', 'unclassified error')
+  return outcomeOf('fatal', 'unclassified error')
 }
 
 const FRIENDLY_MESSAGES: Record<ErrorClass, string> = {
