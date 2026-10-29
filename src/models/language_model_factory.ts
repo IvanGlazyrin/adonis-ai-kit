@@ -43,6 +43,16 @@ function requestSignal(timeoutMs: number, callerSignal: AbortSignal | null | und
   return callerSignal ? AbortSignal.any([timeout, callerSignal]) : timeout
 }
 
+/** The log-safe URL (cut to 120 characters) and the method of a request; POST when none is given. */
+function describeRequest(input: Parameters<typeof fetch>[0], init: RequestInit | undefined): { url: string; method: string } {
+  return { url: requestUrl(input).slice(0, 120), method: init?.method || 'POST' }
+}
+
+/** The message of a thrown value, for logs. */
+function messageOf(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
 function requestUrl(input: Parameters<typeof fetch>[0]): string {
   return typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
 }
@@ -249,8 +259,7 @@ export class LanguageModelFactory {
   private createTimeoutFetch(): typeof fetch {
     const { timeoutMs, logger } = this
     return async (input, init) => {
-      const url = requestUrl(input).slice(0, 120)
-      const method = init?.method || 'POST'
+      const { url, method } = describeRequest(input, init)
       const startMs = Date.now()
 
       logger?.debug?.(`[LLM HTTP] ${method} ${url} | timeout=${timeoutMs}ms`)
@@ -259,8 +268,7 @@ export class LanguageModelFactory {
         logger?.debug?.(`[LLM HTTP] ${response.status} ${method} ${url} | ${Date.now() - startMs}ms`)
         return response
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
-        logger?.error(`[LLM HTTP] FAILED ${method} ${url} | ${Date.now() - startMs}ms | ${msg}`)
+        logger?.error(`[LLM HTTP] FAILED ${method} ${url} | ${Date.now() - startMs}ms | ${messageOf(err)}`)
         throw err
       }
     }
