@@ -83,3 +83,29 @@ export class ToolExecutionError extends AiException {
     this.name = 'ToolExecutionError'
   }
 }
+
+/**
+ * An agent used as a tool (`agentAsTool`) failed. The parent model sees it as a tool error, and the parent run goes
+ * on. `original` keeps the sub-agent's error.
+ */
+export class SubAgentError extends AiException {
+  constructor(public agent: string, public original: unknown) {
+    const detail = original instanceof Error ? original.message : String(original)
+    super(`Sub-agent "${agent}" failed (E_AI_SUBAGENT_FAILED): ${detail}`, 'E_AI_SUBAGENT_FAILED')
+    this.name = 'SubAgentError'
+  }
+}
+
+/**
+ * A sub-agent tried to run a tool that needs human approval. Sub-agents cannot ask, so the sub-agent run stops with
+ * this error. A manifest with an `ask` tool is refused when the sub-agent tool is created.
+ */
+export class SubAgentApprovalError extends AiException {
+  constructor(public agent: string, public toolName: string) {
+    super(
+      `Sub-agent "${agent}" cannot run tool "${toolName}": it needs human approval, and sub-agents cannot ask (E_AI_SUBAGENT_APPROVAL_REQUIRED)`,
+      'E_AI_SUBAGENT_APPROVAL_REQUIRED'
+    )
+    this.name = 'SubAgentApprovalError'
+  }
+}

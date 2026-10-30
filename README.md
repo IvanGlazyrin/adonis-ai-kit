@@ -326,6 +326,18 @@ A skill file may start with frontmatter whose `description` the model sees; with
 - `runStructured` has no tool loop, so it always gets the full prompt.
 - Use it for many or large skills. A few short skills are simpler as `eager` (the default).
 
+#### Sub-agents
+
+`agentAsTool(runner)` lets one agent call another as a tool. The isolation rule:
+
+- The sub-agent receives only the task string. The parent's history is not sent to it. This governs how the call is made, not what the model writes into the task: a parent model can still copy a secret from its history into the task.
+- The sub-agent's tools are only those its manifest allows; every other tool is denied (`defaultToolPermission: 'deny'` is forced). Tool guards are not inherited; pass one to `agentAsTool(runner, { toolGuard })`.
+- A tool that needs human approval (`ask`) cannot run inside a sub-agent: a manifest with an `ask` tool is refused when the sub-agent tool is created, and an `ask` tool wrapped in the tool registry fails the parent's tool call with `E_AI_SUBAGENT_APPROVAL_REQUIRED`. A tool that starts its own work outside the call chain is not covered.
+- A sub-agent that fails returns a tool error (`E_AI_SUBAGENT_FAILED`) to the parent, which goes on. An ACP call failure passes through as `AcpCallFailedError`.
+- The parent does not fall back to another model after a sub-agent ran (the sub-agent call is a tool execution).
+- Pass `spend: new SubAgentSpend()` to `agentAsTool` and `stopOnBudget(limits, costTracker, { extra: spend })` so the parent's budget counts the sub-agent's tokens and cost. The cost tracker still records the sub-agent under its own agent name.
+- Sub-agents nest one level by default (`maxDepth: 1`). A `primary` agent cannot be a sub-agent.
+
 ---
 
 ### 7. Dynamic Credentials & Model Chains

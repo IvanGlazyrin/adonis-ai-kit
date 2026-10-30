@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto'
+import { SubAgentApprovalError } from '../errors.js'
+import { currentSubAgent } from '../run_context.js'
 import type { ConfirmationResponse, Logger, PendingAction } from './types.js'
 
 export type ConfirmationCallback = (response: ConfirmationResponse) => void
@@ -76,6 +78,14 @@ export class ConfirmationService {
     timeoutMs: number = this.defaultTimeoutMs,
     abortSignal?: AbortSignal
   ): Promise<ConfirmationResponse> {
+    const subAgent = currentSubAgent()
+    if (subAgent) {
+      // A sub-agent cannot wait for a human: no pending action is created, and its run stops with this error.
+      const error = new SubAgentApprovalError(subAgent.agent, action.toolName)
+      subAgent.approvalError ??= error
+      subAgent.abort.abort(error)
+      throw error
+    }
     if (this.disposed) {
       return { status: 'rejected', reason: 'Confirmation service disposed' }
     }

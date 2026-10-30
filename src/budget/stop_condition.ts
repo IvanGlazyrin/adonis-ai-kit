@@ -8,15 +8,30 @@ export interface StopOnBudgetLimits {
   maxCostUsd?: number
 }
 
+/** Tokens and USD spent outside this tool loop, for example by sub-agents (see `SubAgentSpend`). */
+export interface BudgetSpend {
+  tokens(): number
+  costUsd(): number
+}
+
+export interface StopOnBudgetOptions {
+  /** Added to the loop's own totals. Without it the condition counts only the loop's steps. */
+  extra?: BudgetSpend
+}
+
 /**
  * A `stopWhen` condition for `generateText` / `streamText` that ends the tool loop after the step that exceeds a
  * limit. Tokens are summed from each step's usage; cost is priced per step by the model that ran it, using the
  * cost tracker's pricing table. Pass it as `stopWhen`, with `maxSteps` as the upper bound.
  */
-export function stopOnBudget(limits: StopOnBudgetLimits, costTracker: CostTracker): StopCondition<ToolSet> {
+export function stopOnBudget(
+  limits: StopOnBudgetLimits,
+  costTracker: CostTracker,
+  options: StopOnBudgetOptions = {}
+): StopCondition<ToolSet> {
   return ({ steps }: { steps: Array<StepResult<ToolSet>> }) => {
-    let tokens = 0
-    let costUsd = 0
+    let tokens = options.extra?.tokens() ?? 0
+    let costUsd = options.extra?.costUsd() ?? 0
     for (const step of steps) {
       const input = step.usage.inputTokens ?? 0
       const output = step.usage.outputTokens ?? 0

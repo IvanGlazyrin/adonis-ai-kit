@@ -120,6 +120,14 @@ export class AgentRunner {
     return this.config.permissions
   }
 
+  /**
+   * A runner for the same agent with `overrides` applied over this runner's options. `agentAsTool` uses it to build
+   * a sub-agent runner; a key set to `undefined` in `overrides` clears the option.
+   */
+  withOptions(overrides: AgentRunnerOptions): AgentRunner {
+    return new AgentRunner(this.manager, this.config, { ...this.defaultOptions, ...overrides })
+  }
+
   private permissionFor(toolName: string): ToolPermission {
     const own = Object.hasOwn(this.config.permissions, toolName)
       ? this.config.permissions[toolName]
