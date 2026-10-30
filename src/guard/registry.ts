@@ -285,6 +285,28 @@ export class ToolRegistry {
     return result
   }
 
+  /**
+   * For `approvals: 'resumable'`: the tools an agent may use, and the AI SDK approval status of each. `ask` tools are
+   * returned without the confirmation wrapper (the run pauses instead), with `user-approval`; `allow` tools get
+   * `not-applicable`. `options.guard` still checks every tool. `deny` tools are left out.
+   */
+  getToolsWithApprovals(
+    agentName: string,
+    options: ToolAccessOptions = {}
+  ): { tools: Record<string, ToolDefinition>; toolApproval: Record<string, 'user-approval' | 'not-applicable'> } {
+    const tools: Record<string, ToolDefinition> = {}
+    const toolApproval: Record<string, 'user-approval' | 'not-applicable'> = {}
+
+    for (const [name, tool] of this.tools.entries()) {
+      const permission = this.permissionFor(agentName, name, options)
+      if (permission === 'deny') continue
+      toolApproval[name] = permission === 'ask' ? 'user-approval' : 'not-applicable'
+      tools[name] = options.guard ? this.wrapTool(name, tool, { ...options, permission: 'allow' }) : tool
+    }
+
+    return { tools, toolApproval }
+  }
+
   /** The per-call map decides when given (the registry default for names it omits); otherwise the agent matrix. */
   private permissionFor(agentName: string, name: string, options: ToolAccessOptions): ToolPermission {
     if (!options.permissions) return this.getAgentPermission(agentName, name)

@@ -478,4 +478,28 @@ await t('conversations: a turn is stored, the next call sends it, a foreign owne
   assert.deepEqual(stored.messages.map((x) => x.role), ['user', 'assistant'])
   await assert.rejects(() => m.conversations.get(c.id, 'user:2'), { code: 'E_AI_CONVERSATION_NOT_FOUND' })
 })
+await t('approvals: a run pauses at an ask tool and resumes after the decision', async () => {
+  const counter = { n: 0 }
+  let step = 0
+  const model = new MockLanguageModelV4({
+    provider: 'mock', modelId: 'gpt-4o',
+    doGenerate: async () => {
+      step++
+      if (step === 1) {
+        return { content: [{ type: 'tool-call', toolCallId: 'c1', toolName: 'danger', input: JSON.stringify({ n: 1 }) }], finishReason: { unified: 'tool-calls', raw: 'tool-calls' }, usage: usage(10, 5), warnings: [] }
+      }
+      return { content: [{ type: 'text', text: 'done' }], finishReason: finish(), usage: usage(10, 5), warnings: [] }
+    },
+  })
+  const tools = { danger: tool({ description: 'd', inputSchema: z.object({ n: z.number() }), execute: async ({ n }) => { counter.n++; return { ok: n } } }) }
+  const { MemoryConversationStore } = await import(`${P}/conversations/index.js`)
+  const m = mgr({ main: customProvider(model) }, { conversations: { store: new MemoryConversationStore() }, approvals: { secret: 'r'.repeat(32), allowVolatileStore: true } })
+  const c = await m.conversations.start('user:1')
+  const paused = await m.generateText({ prompt: 'go', tools, toolPermissions: { danger: 'ask' }, approvals: 'resumable', conversation: { id: c.id, owner: 'user:1' } })
+  assert.equal(paused.status, 'awaiting-approval')
+  assert.equal(counter.n, 0)
+  const done = await m.conversations.resolveApprovals(c.id, 'user:1', [{ approvalId: paused.pendingApprovals[0].approvalId, approved: true }], { tools, toolPermissions: { danger: 'ask' } })
+  assert.equal(counter.n, 1)
+  assert.equal(done.text, 'done')
+})
 console.log(`\n${passed} passed`)

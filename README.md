@@ -20,7 +20,7 @@ While frameworks like **Laravel AI** and **Prism** bring basic prompt-level abst
 | **Foundation Engine** | **Vercel AI SDK v7** (native Node.js async streams & tool calls) | Hand-written provider drivers on the Laravel HTTP client |
 | **Circuit Breaker** | **Per `provider:model` key** (isolated half-open state, probe limits) | Global or none |
 | **Cascading Fallbacks** | No fallback once a local tool has run; provider-executed tools and ACP agents: see docs | Non-streaming failover re-runs the call, including executed tools (`Promptable::withModelFailover`); streaming stops failover after the first output |
-| **Tool Security (Guardrails)** | Fail-closed `ToolRegistry` (default `deny`); in-process HITL for `ask` tools. `AiManager` tools default to `allow` | Opt-in, persisted tool approvals; `Stop` middleware |
+| **Tool Security (Guardrails)** | Fail-closed `ToolRegistry` (default `deny`); in-process HITL for `ask` tools, or resumable approvals (`approvals: 'resumable'`: signed, stored, survive a restart). `AiManager` tools default to `allow` | Opt-in, persisted tool approvals; `Stop` middleware |
 | **Token Budget & Cost** | **Live USD pricing**, ring-buffer memory, cache-read & reasoning tokens | Token counts only, no cost tracking |
 | **Catalog Auto-Discovery** | **models.dev integration** with TTL cache & atomic writes | Defaults hard-coded per provider class plus `config/ai.php`; no live catalog |
 | **Agent Protocols** | **ACP (Agent Client Protocol)** for Claude Code, opencode & subagents | Basic prompt templates |
@@ -445,6 +445,50 @@ A table layout that fits the port: `conversations(id, owner, agent_name, version
 updated_at)` and `conversation_messages(id, conversation_id, seq, message json, created_at)`, with an index on
 `(owner, updated_at)`. `append` must check `owner` and `expectedVersion` in one transaction and throw
 `ConversationNotFoundError` or `ConversationConflictError`. Persistence of files is outside the kit.
+
+### 10. Resumable approvals (survive a restart)
+
+By default an `ask` tool waits in memory for `ConfirmationService`, and a restart loses the wait. With
+`approvals: 'resumable'` the run stops at the `ask` tool, its state is stored in the conversation, and a later call
+resolves it, in the same process or after a restart:
+
+```ts
+// The secret comes from the environment, not from source code. At least 32 bytes.
+approvals: { secret: approvalSecret(env.get('AI_APPROVAL_SECRET')), ttlMs: 24 * 60 * 60 * 1000 }
+
+const run = await ai.generateText({
+  prompt: 'Delete the old backups',
+  tools,
+  toolPermissions: { delete_backups: 'ask' },
+  approvals: 'resumable',
+  conversation: { id: conversation.id, owner: 'user:42' },
+})
+run.status          // 'awaiting-approval'
+run.pendingApprovals // [{ approvalId, toolName, input, expiresAt }]
+
+// Later, possibly after a restart. Every approval of the step needs a decision in this one call.
+const done = await ai.conversations.resolveApprovals(conversation.id, 'user:42',
+  [{ approvalId: run.pendingApprovals[0].approvalId, approved: true }],
+  { tools, toolPermissions: { delete_backups: 'ask' } })
+```
+
+- **Signed.** The AI SDK signs each request (HMAC, `experimental_toolApprovalSecret`). A changed tool input, a missing
+  signature or a forged `approvalId` does not run the tool: a changed or unsigned request throws `ApprovalSignatureError`
+  (`E_AI_APPROVAL_INVALID`) and the step is closed with a denial; an unknown id throws `ApprovalNotFoundError`.
+- **At most once.** The decision and the "executing" mark are stored before the tool runs. An approved tool that already
+  ran is never run again: a retry (for example after a failed model call) uses its stored result. A tool that was
+  executing when the process stopped is reported to the model as "outcome unknown after restart", not run again.
+- **Owner and expiry.** The owner is checked as for every conversation call. A decision after `ttlMs` is a denial
+  (`reason: 'expired'`, listed in `expiredApprovalIds`). A replayed decision is `ApprovalNotFoundError`.
+- **Secret.** Rotating the secret makes the pending requests unverifiable: they are refused (fail-closed). Change it
+  when no approval is pending. `approvalSecret()` redacts the value in JSON, `String()` and logs.
+- **Store.** `resumable` needs a durable conversation store (`store.durable === true`). The in-memory store is refused
+  unless `approvals.allowVolatileStore: true` (tests and development). Concurrent decisions on one step: one wins, the
+  other gets `ConversationConflictError`.
+- **Limits.** A provider-executed tool (`type: 'provider'`) with `ask` is refused (`E_AI_CONFIG_ERROR`), since the
+  provider does not sign approvals. A sub-agent cannot ask (see `agentAsTool`). ACP agents keep `ConfirmationService`.
+  A retry after a failed model call re-sends the model the stored results of approved tools; tools with `allow` are
+  not approval-gated and run again if the whole turn is retried.
 
 ## Ace CLI Commands
 

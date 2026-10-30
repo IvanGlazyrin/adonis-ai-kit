@@ -13,6 +13,7 @@ export * from './guard/index.js'
 export * from './budget/index.js'
 export * from './models/index.js'
 export * from './json_recovery.js'
+export * from './approvals/index.js'
 
 // Explicitly resolve re-export ambiguities from star exports
 export type { ToolPermission } from './guard/index.js'

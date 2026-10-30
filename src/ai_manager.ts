@@ -3,6 +3,7 @@ import {
   generateText,
   streamText,
   stepCountIs,
+  InvalidToolApprovalSignatureError,
   NoObjectGeneratedError,
   Output,
   wrapLanguageModel,
@@ -17,7 +18,11 @@ import type {
   ToolSet,
 } from 'ai'
 import { extractFirstJsonValue } from './json_recovery.js'
-import { Conversations } from './conversations/conversations.js'
+import { Conversations, type ConversationTurn } from './conversations/conversations.js'
+import { ApprovalRun, approvalsFromMessages, asJson, outputOfError, outputOfResult, pendingViews, toolApprovalFor, toolMessageOf } from './approvals/resumable.js'
+import { ApprovalSignatureError } from './approvals/errors.js'
+import { ApprovalSecret } from './approvals/secret.js'
+import type { PendingApproval } from './approvals/types.js'
 import { cacheControlFor, mergeProviderOptions, validatePromptCache } from './prompt_cache.js'
 import { CostTracker } from './budget/cost_tracker.js'
 import type { ModelPricing } from './budget/types.js'
@@ -329,9 +334,30 @@ function inputMessages(options: GenerateTextOptions): ModelMessage[] {
 }
 
 /** The call with the stored history placed before its own messages. The prompt is folded into the messages. */
-function withHistory<T extends GenerateTextOptions>(options: T, history: ModelMessage[]): T {
-  return { ...options, prompt: undefined, messages: [...history, ...inputMessages(options)] }
+function withHistory<T extends GenerateTextOptions>(options: T, history: ModelMessage[], input: ModelMessage[]): T {
+  return { ...options, prompt: undefined, messages: [...history, ...input] }
 }
+
+/** The approval secret of a config: a plain value is wrapped, so the config copy never holds it in clear. */
+function approvalSecretOf(config: AiConfig): ApprovalSecret | undefined {
+  const secret = config.approvals?.secret
+  if (secret === undefined) return undefined
+  return secret instanceof ApprovalSecret ? secret : new ApprovalSecret(secret)
+}
+
+/** Approval context of one call: the secret that signs requests, and for a resumed step the run that records it. */
+interface ApprovalContext {
+  secret: ApprovalSecret
+  run?: ApprovalRun
+}
+
+/** A call that continues a paused step: the run that holds its approvals, and the approvals that expired. */
+interface ResumeContext {
+  run: ApprovalRun
+  expiredApprovalIds: string[]
+}
+
+const DEFAULT_APPROVAL_TTL_MS = 24 * 60 * 60 * 1000
 
 /**
  * Central AI Manager for AdonisJS 7 (analog of Laravel AI / Prism).
@@ -352,6 +378,7 @@ export class AiManager {
   private pricingWarmups: Map<string, Promise<void>> = new Map()
   private lazyLanguageModels?: LanguageModelFactory
   private conversationService?: Conversations
+  private approvalSecret?: ApprovalSecret
 
   constructor(
     config: AiConfig,
@@ -362,7 +389,12 @@ export class AiManager {
     agentLoader?: AgentLoader,
     confirmation?: ConfirmationService
   ) {
-    this.config = config
+    // The secret is kept as an ApprovalSecret, which redacts itself, so `getConfig()` never shows it in clear.
+    this.approvalSecret = approvalSecretOf(config)
+    this.config =
+      this.approvalSecret && config.approvals
+        ? { ...config, approvals: { ...config.approvals, secret: this.approvalSecret } }
+        : config
     this.logger = logger
     this.circuitBreaker = new CircuitBreaker(config.circuitBreaker)
     this.costTracker =
@@ -410,7 +442,54 @@ export class AiManager {
     return (this.conversationService ??= new Conversations({
       store: this.config.conversations?.store,
       logger: this.logger,
+      now: () => this.approvalNow(),
+      runner: { generate: (options, resume) => this.generateTextTurn(options, resume) },
     }))
+  }
+
+  private approvalNow(): Date {
+    return this.config.approvals?.now ? this.config.approvals.now() : new Date()
+  }
+
+  /** The approval mode of a call: its own, else the config's, else `blocking`. */
+  private approvalModeOf(options: GenerateTextOptions): 'blocking' | 'resumable' {
+    return options.approvals ?? this.config.approvals?.mode ?? 'blocking'
+  }
+
+  /**
+   * The approval context of a call, or `undefined` in `blocking` mode. A `resumable` call needs a conversation, a
+   * secret, and a durable store (or `allowVolatileStore`); otherwise it is a config error, before the model is called.
+   */
+  private approvalContextOf(options: GenerateTextOptions, resume?: ResumeContext): ApprovalContext | undefined {
+    if (this.approvalModeOf(options) !== 'resumable') return undefined
+    if (!options.conversation) {
+      throw new AiException('approvals: "resumable" needs a conversation (conversation: { id, owner })', 'E_AI_CONFIG_ERROR')
+    }
+    if (!this.approvalSecret) {
+      throw new AiException('approvals: "resumable" needs approvals.secret (at least 32 bytes)', 'E_AI_CONFIG_ERROR')
+    }
+    if (!this.conversations.store.durable && this.config.approvals?.allowVolatileStore !== true) {
+      throw new AiException(
+        'approvals: "resumable" needs a durable conversation store. Set approvals.allowVolatileStore to use the in-memory store (tests and development only).',
+        'E_AI_CONFIG_ERROR'
+      )
+    }
+    // A provider runs its own tools and does not sign approval requests, so an `ask` on one cannot be verified.
+    for (const [name, tool] of Object.entries(options.tools ?? {})) {
+      if (toolPermission(options.toolPermissions, name) === 'ask' && (tool as { type?: string }).type === 'provider') {
+        throw new AiException(
+          `Tool "${name}" is executed by the provider and cannot ask for approval in "resumable" mode`,
+          'E_AI_CONFIG_ERROR'
+        )
+      }
+    }
+    return { secret: this.approvalSecret, run: resume?.run }
+  }
+
+  /** The time a new pending approval expires. */
+  private approvalExpiry(): string {
+    const ttl = this.config.approvals?.ttlMs ?? DEFAULT_APPROVAL_TTL_MS
+    return new Date(this.approvalNow().getTime() + ttl).toISOString()
   }
 
   getCatalog(): ModelsDevSource {
@@ -797,7 +876,7 @@ export class AiManager {
    * `deny` tools are dropped, `ask` tools need a human confirmation (fail-closed without one),
    * and every tool passes through `toolGuard.guard` when provided.
    */
-  private prepareTools(options: GenerateTextOptions, state: AttemptState): ToolSet | undefined {
+  private prepareTools(options: GenerateTextOptions, state: AttemptState, approval?: ApprovalContext): ToolSet | undefined {
     const tools = options.tools
     if (!tools || Object.keys(tools).length === 0) return undefined
 
@@ -807,7 +886,11 @@ export class AiManager {
       if (permission === 'deny') continue
 
       let candidate = this.trackExecution(tool as unknown as ToolDefinition, state)
-      if (permission === 'ask' || options.toolGuard?.guard) {
+      if (approval) {
+        // `resumable`: an `ask` tool is not confirmed in memory; the run pauses at its approval request instead.
+        if (options.toolGuard?.guard) candidate = this.guardTool(name, candidate, 'allow', options.toolGuard)
+        if (approval.run) candidate = this.approvalExecution(candidate, approval.run)
+      } else if (permission === 'ask' || options.toolGuard?.guard) {
         candidate = this.guardTool(name, candidate, permission, options.toolGuard)
       }
       prepared[name] = candidate
@@ -846,6 +929,31 @@ export class AiManager {
     }
   }
 
+  /**
+   * Records a resumed call's tool: "executing" before the tool runs, and its output after. The writes are awaited, so
+   * a stop between them leaves a state that `resume` reads as "outcome unknown", never as "not started".
+   */
+  private approvalExecution(tool: ToolDefinition, run: ApprovalRun): ToolDefinition {
+    const original = tool.execute?.bind(tool)
+    if (!original) return tool
+    return {
+      ...tool,
+      execute: async (args: unknown, execOptions?: unknown) => {
+        const toolCallId = (execOptions as { toolCallId?: string } | undefined)?.toolCallId
+        if (toolCallId === undefined) return original(args, execOptions)
+        await run.begin(toolCallId)
+        try {
+          const output = await original(args, execOptions)
+          await run.finish(toolCallId, outputOfResult(output))
+          return output
+        } catch (err) {
+          await run.finish(toolCallId, outputOfError(err))
+          throw err
+        }
+      },
+    }
+  }
+
   /** Wraps a tool with the guard and, for `ask`, the confirmation service. */
   private guardTool(
     name: string,
@@ -866,7 +974,8 @@ export class AiManager {
     options: GenerateTextOptions,
     model: LanguageModel,
     state: AttemptState,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    approval?: ApprovalContext
   ): TextCallParams & StreamCallParams {
     const maxOutputTokens = options.maxOutputTokens ?? options.maxTokens
     const sideEffects = attemptSideEffectHooks(
@@ -877,7 +986,7 @@ export class AiManager {
         state.stepUsages.push(step.usage)
       }
     )
-    const { tools, toolOrder } = cacheTools(this.prepareTools(options, state), options.promptCache?.tools)
+    const { tools, toolOrder } = cacheTools(this.prepareTools(options, state, approval), options.promptCache?.tools)
     const common = {
       model,
       instructions: systemInstructions(options),
@@ -903,6 +1012,13 @@ export class AiManager {
         }
       },
       abortSignal: signal,
+      // Only `resumable` calls ask the SDK for approvals; in `blocking` mode the SDK sees no approval settings.
+      ...(approval
+        ? {
+            toolApproval: tools ? toolApprovalFor(tools, options.toolPermissions) : undefined,
+            experimental_toolApprovalSecret: approval.secret.reveal(),
+          }
+        : {}),
     }
 
     if (options.messages && options.messages.length > 0) {
@@ -972,19 +1088,53 @@ export class AiManager {
    * Generates text using the configured LLM provider with fallback, budget accounting, and tool guard.
    */
   async generateText(options: GenerateTextOptions): Promise<GenerateTextResult> {
-    const agentName = this.agentNameOf(options)
-    const turn = options.conversation
-      ? await this.conversations.openTurn(options.conversation, inputMessages(options))
-      : undefined
+    return this.generateTextTurn(options)
+  }
 
-    const { result, provider, model, usage, durationMs, costUsd } = await this.generateAndRecord(
+  /**
+   * `generateText` for a call, or for the call that continues a paused step (`resume`, from `ai.conversations`).
+   * A `resumable` run that stops at an approval stores its state and returns `status: 'awaiting-approval'`.
+   */
+  private async generateTextTurn(options: GenerateTextOptions, resume?: ResumeContext): Promise<GenerateTextResult> {
+    const agentName = this.agentNameOf(options)
+    const approval = this.approvalContextOf(options, resume)
+    let turn: ConversationTurn | undefined
+    let callOptions = options
+    if (resume && options.conversation) {
+      await this.settleUnavailableApprovals(resume.run, options)
+      const input = [toolMessageOf(resume.run.approvals)]
+      turn = await this.conversations.openTurn(options.conversation, input, resume.run)
+      callOptions = withHistory(options, turn.history, input)
+    } else if (options.conversation) {
+      const input = inputMessages(options)
+      turn = await this.conversations.openTurn(options.conversation, input)
+      callOptions = withHistory(options, turn.history, input)
+    }
+
+    const outcome = await this.generateAndRecord(
       agentName,
-      turn ? withHistory(options, turn.history) : options,
+      callOptions,
       options.schema ? Output.object({ schema: options.schema }) : undefined,
-      (done) => ({ finishReason: done.finishReason, ...options.metadata })
-    )
+      (done) => ({ finishReason: done.finishReason, ...options.metadata }),
+      approval
+    ).catch(async (err: unknown) => {
+      if (resume && turn && err instanceof ApprovalSignatureError) await this.closeApprovalStep(turn, resume.run)
+      throw err
+    })
+    const { result, provider, model, usage, durationMs, costUsd } = outcome
+
+    const pending = approval ? approvalsFromMessages(result.response.messages, this.approvalExpiry()) : []
+    const awaiting = pending.length > 0
     // The turn is stored only now, after the model answered; a call that failed above stored nothing.
-    const conversation = turn ? { id: turn.id, version: await turn.commit(result.response.messages) } : undefined
+    const conversation = turn
+      ? {
+          id: turn.id,
+          version: await turn.commit(result.response.messages, {
+            ...(resume ? { input: [toolMessageOf(resume.run.approvals)] } : {}),
+            ...(awaiting ? { state: asJson({ approvals: pending }) } : resume ? { state: null } : {}),
+          }),
+        }
+      : undefined
     this.warnIfOverBudget(agentName, usage.totalTokens, costUsd)
 
     return {
@@ -1002,8 +1152,37 @@ export class AiManager {
       rawResponse: result.response,
       responseMessages: result.response.messages,
       conversation,
+      status: awaiting ? 'awaiting-approval' : 'completed',
+      pendingApprovals: awaiting ? pendingViews(result.response.messages, pending) : [],
+      expiredApprovalIds: resume?.expiredApprovalIds ?? [],
       durationMs,
     }
+  }
+
+  /** An approved call whose tool is no longer offered cannot run: its approval is denied, so the model sees why. */
+  private async settleUnavailableApprovals(run: ApprovalRun, options: GenerateTextOptions): Promise<void> {
+    const offered = Object.keys(options.tools ?? {}).filter((name) => toolPermission(options.toolPermissions, name) !== 'deny')
+    for (const approval of run.approvals) {
+      if (approval.status === 'decided' && approval.approved === true && !offered.includes(approval.toolName)) {
+        await run.deny(approval.approvalId, 'tool unavailable')
+      }
+    }
+  }
+
+  /**
+   * After an approval failed its signature check: every approval of the step is closed with a denial, and the closed
+   * step is stored, so the conversation is not left waiting. No tool ran.
+   */
+  private async closeApprovalStep(turn: ConversationTurn, run: ApprovalRun): Promise<void> {
+    await run.closeAll('invalid signature')
+    await turn.commit([], { input: [toolMessageOf(run.approvals)], state: null })
+  }
+
+  /** Maps the SDK's signature error to ApprovalSignatureError, so it is fatal and never falls back to another model. */
+  private approvalFailure(err: unknown): unknown {
+    if (!InvalidToolApprovalSignatureError.isInstance(err)) return err
+    this.logger?.warn?.('[AiManager] A tool approval has an invalid signature. The tool did not run; the step was closed with a denial.')
+    return new ApprovalSignatureError()
   }
 
   /**
@@ -1015,11 +1194,15 @@ export class AiManager {
     validatePromptCache(options)
     const startTime = Date.now()
     const agentName = this.agentNameOf(options)
-    const turn = options.conversation
-      ? await this.conversations.openTurn(options.conversation, inputMessages(options))
-      : undefined
-    const callOptions = turn ? withHistory(options, turn.history) : options
+    const approval = this.approvalContextOf(options)
+    const input = inputMessages(options)
+    const turn = options.conversation ? await this.conversations.openTurn(options.conversation, input) : undefined
+    const callOptions = turn ? withHistory(options, turn.history, input) : options
     let streamResponseMessages: ModelMessage[] = []
+    let streamOutcome: { status: 'completed' | 'awaiting-approval'; pendingApprovals: PendingApproval[] } = {
+      status: 'completed',
+      pendingApprovals: [],
+    }
 
     const controller = new AbortController()
     const signal = options.abortSignal
@@ -1047,7 +1230,8 @@ export class AiManager {
           text: string,
           finishReason?: string,
           extraMetadata: Record<string, unknown> = {},
-          completedMessages?: ModelMessage[]
+          completedMessages?: ModelMessage[],
+          commitState?: ReturnType<typeof asJson>
         ): void => {
           if (attemptFailed || accounted) return
           accounted = true
@@ -1067,7 +1251,7 @@ export class AiManager {
             }
             if (turn && completedMessages) {
               try {
-                await turn.commit(completedMessages)
+                await turn.commit(completedMessages, { state: commitState })
               } catch (err) {
                 this.logger?.error?.(`[AiManager] Conversation "${turn.id}" was not stored: ${String(err)}`)
               }
@@ -1081,7 +1265,7 @@ export class AiManager {
           })()
         }
 
-        const params = this.buildTextParams(callOptions, languageModel, state, signal)
+        const params = this.buildTextParams(callOptions, languageModel, state, signal, approval)
         const stream = streamText({
           ...params,
           ...(callOptions.schema ? { output: Output.object({ schema: callOptions.schema }) } : {}),
@@ -1103,7 +1287,19 @@ export class AiManager {
           },
           onEnd: (event) => {
             streamResponseMessages = event.responseMessages
-            finish(normalizeUsage(event.totalUsage), event.text, event.finishReason, {}, event.responseMessages)
+            const pending = approval ? approvalsFromMessages(event.responseMessages, this.approvalExpiry()) : []
+            streamOutcome = {
+              status: pending.length > 0 ? 'awaiting-approval' : 'completed',
+              pendingApprovals: pending.length > 0 ? pendingViews(event.responseMessages, pending) : [],
+            }
+            finish(
+              normalizeUsage(event.totalUsage),
+              event.text,
+              event.finishReason,
+              {},
+              event.responseMessages,
+              pending.length > 0 ? asJson({ approvals: pending }) : undefined
+            )
           },
           onAbort: (event) => finish(sumUsage(event.steps.map((s) => s.usage)), ''),
         } as StreamCallParams)
@@ -1123,7 +1319,7 @@ export class AiManager {
           }
         } catch (err) {
           attemptFailed = true
-          throw err
+          throw this.approvalFailure(err)
         } finally {
           // Release only our peek branch; other consumers read their own tee of the stream.
           await iterator.return?.()
@@ -1155,6 +1351,9 @@ export class AiManager {
           usage,
           finishReason: (await raw.finishReason) ?? 'stop',
           responseMessages: streamResponseMessages,
+          status: streamOutcome.status,
+          pendingApprovals: streamOutcome.pendingApprovals,
+          expiredApprovalIds: [],
           provider,
           model,
           durationMs: Date.now() - startTime,
@@ -1205,7 +1404,8 @@ export class AiManager {
     agentName: string,
     options: GenerateTextOptions,
     output: ReturnType<typeof Output.object> | undefined,
-    costMetadata: (result: TextCallResult) => Record<string, unknown>
+    costMetadata: (result: TextCallResult) => Record<string, unknown>,
+    approval?: ApprovalContext
   ) {
     validatePromptCache(options)
     const startTime = Date.now()
@@ -1214,8 +1414,12 @@ export class AiManager {
       async ({ getModel, modelName, providerName, state, acp }) => {
         void this.warmPricing(providerName, modelName)
         const languageModel = withJsonRecovery(await getModel(), options, acp)
-        const params = this.buildTextParams(options, languageModel, state, options.abortSignal)
-        return generateText({ ...params, ...(output ? { output } : {}) } as TextCallParams)
+        const params = this.buildTextParams(options, languageModel, state, options.abortSignal, approval)
+        try {
+          return await generateText({ ...params, ...(output ? { output } : {}) } as TextCallParams)
+        } catch (err) {
+          throw this.approvalFailure(err)
+        }
       }
     )
 

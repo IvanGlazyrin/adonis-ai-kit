@@ -18,6 +18,8 @@ import type { ModelResolver } from './models/catalog_resolver.js'
 import type { FallbackEvent } from './models/model_chain.js'
 import type { LanguageModelSource, ResolvedModel } from './models/types.js'
 import type { ConversationCallOptions, ConversationStore } from './conversations/types.js'
+import type { ApprovalSecret } from './approvals/secret.js'
+import type { ApprovalMode, PendingApproval } from './approvals/types.js'
 
 export type CircuitBreakerState = 'closed' | 'open' | 'half_open'
 
@@ -207,6 +209,22 @@ export interface AiConfig {
   languageModels?: LanguageModelSource
   /** Conversation history (see `adonis-ai-kit/conversations`). Without `store`, an in-memory store is used. */
   conversations?: { store?: ConversationStore }
+  /** Human approval of `ask` tools (see `adonis-ai-kit/approvals`). Default mode: `blocking`. */
+  approvals?: {
+    /** Default for calls that do not set `approvals`. Default: `blocking`. */
+    mode?: ApprovalMode
+    /**
+     * Signs approval requests (HMAC, AI SDK `experimental_toolApprovalSecret`). At least 32 bytes. Wrap it with
+     * `approvalSecret()` so that a logged config does not show it. Required for `resumable`.
+     */
+    secret?: string | Uint8Array | ApprovalSecret
+    /** How long a pending approval waits for a decision, in ms. Default: 24 hours. */
+    ttlMs?: number
+    /** Allows `resumable` with a store that is not durable (tests and development). Default: false. */
+    allowVolatileStore?: boolean
+    /** The clock for expiry. Default: the current time. */
+    now?: () => Date
+  }
 }
 
 /** Options shared by calls that can run over a dynamic model chain. */
@@ -329,6 +347,12 @@ export interface GenerateTextOptions extends ModelChainCallOptions {
    * after the model answered. The owner is checked on every call.
    */
   conversation?: ConversationCallOptions
+  /**
+   * `resumable`: an `ask` tool stops the run instead of waiting in memory. The result has `status: 'awaiting-approval'`
+   * and `pendingApprovals`; `ai.conversations.resolveApprovals()` continues it. Needs `conversation` and
+   * `approvals.secret`. Default: the config's `approvals.mode`, else `blocking`.
+   */
+  approvals?: ApprovalMode
 }
 
 export interface GenerateTextResult {
@@ -349,6 +373,12 @@ export interface GenerateTextResult {
   responseMessages: ModelMessage[]
   /** Set when the call continued a conversation: its id and the version after this turn was stored. */
   conversation?: { id: string; version: number }
+  /** `awaiting-approval` when the run stopped at an `ask` tool (`approvals: 'resumable'`); resolve with `ai.conversations`. */
+  status: 'completed' | 'awaiting-approval'
+  /** The approvals the run is waiting for. Empty unless `status` is `awaiting-approval`. */
+  pendingApprovals: PendingApproval[]
+  /** Approvals that were denied because they expired before the decision (see `ai.conversations.resolveApprovals`). */
+  expiredApprovalIds: string[]
   durationMs: number
 }
 

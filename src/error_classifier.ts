@@ -252,6 +252,9 @@ function classifyWithoutStatus(error: unknown, abortSignal?: AbortSignal): Error
   if (error === null || typeof error !== 'object') return outcomeOf('fatal', 'unknown error')
 
   const name = (error as Record<string, any>).name
+  // A tool approval that is missing, unknown or does not verify: retrying on another model changes nothing.
+  const code = (error as Record<string, any>).code
+  if (typeof code === 'string' && code.startsWith('E_AI_APPROVAL_')) return outcomeOf('fatal', 'tool approval rejected')
   if (name === 'AbortError') return outcomeOf('fatal', 'aborted')
   if (FATAL_NAMES.has(name)) return outcomeOf('fatal', `validation (${name})`)
   return null
