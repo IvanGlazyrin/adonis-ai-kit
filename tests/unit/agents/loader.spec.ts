@@ -150,3 +150,23 @@ test.group('AgentLoader prompt files', () => {
     await assert.rejects(() => loaderFor(d).loadAgentPrompt('odd'), /Invalid agent manifest for "odd"/)
   })
 })
+
+test.group('AgentLoader skill loading mode', () => {
+  test('manifest: skillLoading defaults to eager', async ({ assert }) => {
+    const d = dirs()
+    writeFileSync(join(d.configsDir, 'plain.md'), 'Body.')
+
+    const config = await loaderFor(d).loadAgentPrompt('plain')
+
+    assert.equal(config.skillLoading, 'eager')
+  })
+
+  test('manifest: accepts on-demand', async ({ assert }) => {
+    const d = dirs()
+    writeFileSync(join(d.configsDir, 'lazy.md'), '---\nskillLoading: on-demand\n---\nBody.')
+
+    const config = await loaderFor(d).loadAgentPrompt('lazy')
+
+    assert.equal(config.skillLoading, 'on-demand')
+  })
+})

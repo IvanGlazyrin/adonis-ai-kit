@@ -4,6 +4,7 @@ import { parse as parseYaml } from 'yaml'
 import type { z } from 'zod'
 import type { Logger } from '../logger.js'
 import { agentManifestSchema, type AgentManifest, type ToolPermission } from './manifest.js'
+import { LOAD_SKILL_TOOL } from './skill_tool.js'
 
 const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 
@@ -52,15 +53,82 @@ function parseFrontmatter(agentId: string, yaml: string): unknown {
   }
 }
 
+/** A skill file read for use: its name, the one-line description shown to the model, and the body. */
+export interface SkillEntry {
+  name: string
+  description: string
+  /** The skill text without its frontmatter block. */
+  body: string
+}
+
+/** Skill files above this size are not loaded (the same limit as laravel/ai). */
+export const MAX_SKILL_BYTES = 256 * 1024
+
+/**
+ * Reads a skill file. Optional `---` frontmatter gives `description`; `name`, when present, must match the file name
+ * (a mismatch is a warning only). Without a description the first `# heading` is used, then the skill name.
+ * A broken frontmatter block is a warning: the description then comes from the heading and the body has no block.
+ */
+function parseSkill(name: string, raw: string, warn: (message: string) => void): SkillEntry {
+  const normalized = normalizeContent(raw)
+  const parts = splitFrontmatter(normalized)
+  // Without frontmatter the body is the file as it was (trimmed), so eager prompts stay byte-identical.
+  let body = parts ? parts.body : raw.trim()
+  let meta: Record<string, unknown> = {}
+
+  if (parts) {
+    try {
+      const parsed = parseYaml(parts.yaml)
+      if (parsed !== null && typeof parsed === 'object') meta = parsed as Record<string, unknown>
+    } catch (err: unknown) {
+      warn(`[AgentLoader] Skill "${name}" has invalid YAML frontmatter; its description comes from the heading: ${err instanceof Error ? err.message : String(err)}`)
+      body = parts.body
+    }
+    if (typeof meta.name === 'string' && meta.name !== name) {
+      warn(`[AgentLoader] Skill file "${name}" declares name "${meta.name}" in its frontmatter`)
+    }
+  }
+
+  const declared = typeof meta.description === 'string' ? meta.description.trim() : ''
+  const heading = body.match(/^#\s+(.+?)\s*$/m)?.[1]
+  return { name, description: declared || heading || name, body }
+}
+
+/** The agent body with the skill bodies appended, each after a `---` line. */
+export function appendSkillBodies(body: string, skills: SkillEntry[]): string {
+  return skills.length > 0 ? [body, ...skills.map((skill) => skill.body)].join('\n\n---\n\n') : body
+}
+
+/**
+ * The on-demand system prompt: the body, then one `name: description` line per skill and the rule to load a skill
+ * before a task it covers. Fixed text, so the prompt is identical on every step (prompt cache).
+ */
+export function composeOnDemandPrompt(body: string, skills: SkillEntry[]): string {
+  if (skills.length === 0) return body
+  const index = skills.map((skill) => `- ${skill.name}: ${skill.description}`).join('\n')
+  return [
+    body,
+    '## Available skills',
+    `Before a task that one of these skills covers, call the \`${LOAD_SKILL_TOOL}\` tool with its name, then follow the instructions it returns.`,
+    index,
+  ].join('\n\n---\n\n')
+}
+
 export interface AgentPromptConfig {
   id: string
   description: string
   mode: 'primary' | 'subagent'
   stopSteps: number
   skills: string[]
+  /** `eager`: every skill body is in `systemPrompt`. `on-demand`: `systemPrompt` lists names and descriptions only. */
+  skillLoading: 'eager' | 'on-demand'
   systemPrompt: string
+  /** The system prompt with every skill body inlined, whatever `skillLoading` is. */
+  eagerSystemPrompt: string
   body: string
   skillPrompts: Record<string, string>
+  /** The skills that loaded, with their descriptions. */
+  skillEntries: SkillEntry[]
   outputSchemaName?: string
   outputSchema?: z.ZodTypeAny
   permissions: Record<string, ToolPermission>
@@ -129,25 +197,34 @@ export class AgentLoader {
     return resolved.startsWith(root + path.sep) ? resolved : null
   }
 
+  /** The body of a skill (no frontmatter); empty when the skill does not load. */
   loadSkill(skillName: string, skillsDir: string): string {
+    return this.loadSkillEntry(skillName, skillsDir)?.body ?? ''
+  }
+
+  /** A skill with its description; `null` when it is missing, unsafe, unreadable or over the size limit (each logged). */
+  loadSkillEntry(skillName: string, skillsDir: string): SkillEntry | null {
     const skillPath = this.safeResolve(skillsDir, skillName)
     if (!skillPath) {
       this.logger?.warn?.(`[AgentLoader] Refusing unsafe skill name: ${JSON.stringify(skillName)}`)
-      return ''
+      return null
     }
-
-    const text = this.readSkillFile(skillPath)
-    if (text !== null) return text
-
-    this.logger?.warn?.(`[AgentLoader] Skill not found: ${skillName} at ${skillPath}`)
-    return ''
+    if (!fs.existsSync(skillPath)) {
+      this.logger?.warn?.(`[AgentLoader] Skill not found: ${skillName} at ${skillPath}`)
+      return null
+    }
+    return this.readSkillFile(skillName, skillPath)
   }
 
-  /** The trimmed text of a skill file; `null` when it is absent or cannot be read (a read failure is logged). */
-  private readSkillFile(skillPath: string): string | null {
+  /** `null` when the file cannot be read or is over `MAX_SKILL_BYTES` (both are logged). */
+  private readSkillFile(skillName: string, skillPath: string): SkillEntry | null {
     try {
-      if (!fs.existsSync(skillPath)) return null
-      return fs.readFileSync(skillPath, 'utf-8').trim()
+      if (fs.statSync(skillPath).size > MAX_SKILL_BYTES) {
+        this.logger?.warn?.(`[AgentLoader] Skill "${skillName}" is larger than ${MAX_SKILL_BYTES} bytes and is not loaded: ${skillPath}`)
+        return null
+      }
+      const raw = fs.readFileSync(skillPath, 'utf-8')
+      return parseSkill(skillName, raw, (message) => this.logger?.warn?.(message))
     } catch (err: unknown) {
       this.logger?.warn?.(`[AgentLoader] Failed to read skill file "${skillPath}": ${err instanceof Error ? err.message : String(err)}`)
       return null
@@ -175,7 +252,12 @@ export class AgentLoader {
 
     const raw = normalizeContent(fs.readFileSync(filePath, 'utf-8'))
     const { manifest, body } = this.readManifest(agentId, raw)
-    const { systemPrompt, skillPrompts } = this.composeSkills(body, manifest.skills, dirs.skillsDir)
+    const { systemPrompt, eagerSystemPrompt, skillPrompts, skillEntries } = this.composeSkills(
+      body,
+      manifest.skills,
+      dirs.skillsDir,
+      manifest.skillLoading
+    )
     const resolvedOutputSchema = manifest.outputSchema && this.schemaResolver
       ? this.schemaResolver(manifest.outputSchema)
       : undefined
@@ -186,9 +268,12 @@ export class AgentLoader {
       mode: manifest.mode,
       stopSteps: manifest.stopSteps,
       skills: manifest.skills,
+      skillLoading: manifest.skillLoading,
       systemPrompt,
+      eagerSystemPrompt,
       body,
       skillPrompts,
+      skillEntries,
       outputSchemaName: manifest.outputSchema,
       outputSchema: resolvedOutputSchema,
       permissions: manifest.permissions,
@@ -224,23 +309,28 @@ export class AgentLoader {
     return { manifest: manifestResult.data, body }
   }
 
-  /** Appends each skill that loads to the body; a skill that cannot load is skipped. */
+  /**
+   * Loads the skills a manifest lists. A skill that cannot load is skipped. `eagerSystemPrompt` always holds every
+   * body; `systemPrompt` is that prompt in `eager` mode, and the body with a name-and-description index in `on-demand`.
+   */
   private composeSkills(
     body: string,
     skillNames: string[],
-    skillsDir: string
-  ): { systemPrompt: string; skillPrompts: Record<string, string> } {
+    skillsDir: string,
+    skillLoading: 'eager' | 'on-demand'
+  ): { systemPrompt: string; eagerSystemPrompt: string; skillPrompts: Record<string, string>; skillEntries: SkillEntry[] } {
     const skillPrompts: Record<string, string> = {}
-    const sections: string[] = []
+    const skillEntries: SkillEntry[] = []
     for (const skillName of skillNames) {
-      const text = this.loadSkill(skillName, skillsDir)
-      if (text) {
-        skillPrompts[skillName] = text
-        sections.push(text)
+      const entry = this.loadSkillEntry(skillName, skillsDir)
+      if (entry && entry.body) {
+        skillPrompts[skillName] = entry.body
+        skillEntries.push(entry)
       }
     }
-    const systemPrompt = sections.length > 0 ? [body, ...sections].join('\n\n---\n\n') : body
-    return { systemPrompt, skillPrompts }
+    const eagerSystemPrompt = appendSkillBodies(body, skillEntries)
+    const systemPrompt = skillLoading === 'on-demand' ? composeOnDemandPrompt(body, skillEntries) : eagerSystemPrompt
+    return { systemPrompt, eagerSystemPrompt, skillPrompts, skillEntries }
   }
 
   async loadAllAgentPrompts(

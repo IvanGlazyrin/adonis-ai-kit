@@ -307,6 +307,25 @@ Calling `buildAcpRuntimeConfig` + `createACPProvider` directly bypasses the env 
 
 The `sourcecraft` and `freebuff` default agents are deprecated and will be removed from the defaults in 2.0; register them with `registerAcpAgent()` if you need them.
 
+#### Skills on demand
+
+By default an agent's skill bodies go into its system prompt. With `skillLoading: on-demand` in the agent's frontmatter, the system prompt lists only each skill's name and description. The model loads a body with the `loadSkill` tool, and the body comes back as a tool result (it stays in the run's history, not in the system prompt).
+
+```md
+---
+skillLoading: on-demand
+skills:
+  - grid-trading
+---
+```
+
+A skill file may start with frontmatter whose `description` the model sees; without it the first `# heading` is used, then the file name. A skill over 256 KB is not loaded in either mode.
+
+- Each `loadSkill` call uses one step of the tool loop, so raise `stop_steps` if a run needs several skills.
+- `loadSkill` is reserved: a caller tool with that name is refused, and a manifest `deny` or `ask` for it is a config error. It runs with `allow` and passes through `toolGuard`.
+- `runStructured` has no tool loop, so it always gets the full prompt.
+- Use it for many or large skills. A few short skills are simpler as `eager` (the default).
+
 ---
 
 ### 7. Dynamic Credentials & Model Chains

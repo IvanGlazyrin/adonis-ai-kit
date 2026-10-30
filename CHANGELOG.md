@@ -7,6 +7,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Skill files: frontmatter is no longer sent to the model. A `---` block at the top of a skill file is read (`description`, and `name` for a warning on mismatch) and removed from the body in both modes. Without a description, the first `# heading` is used as one. A skill file over 256 KB is skipped with a warning in both modes; before, it loaded in full. A file without frontmatter loads byte-identically.
 - A retryable ACP failure during a run now throws `AcpCallFailedError` (code `E_AI_ACP_CALL_FAILED`, `sideEffectsPossible: true`) instead of the agent's own error. The original error is in `original`. It is not classified as retryable, so the caller decides whether to retry through the agent, use another model, or cancel.
 - Fallback is now refused after provider-executed tool calls and after a retryable ACP failure. A provider-executed tool call (for example a server-side web search) counts as a side effect, as does a call to an ACP agent that started; a retryable ACP failure (timeout, overload, network) is thrown as is instead of moving to the next model. Missing ACP packages and config errors still fall back. Unknown tools (`invalid` calls) do not count, since they never ran.
 - Tokens consumed by a failed attempt, from its finished steps (or from a `NoObjectGeneratedError`), are recorded in the cost tracker with `metadata.failed: true` and the error class. A stream that fails after it started records the usage of its finished steps.
@@ -15,6 +16,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Skills on demand: agent manifest `skillLoading: 'eager' | 'on-demand'` (default `eager`; `AgentRunnerOptions.skillLoading` overrides it). In `on-demand` the system prompt lists skill names and descriptions, and a `loadSkill` tool returns a skill body as a tool result. `createLoadSkillTool()` and `LOAD_SKILL_TOOL` are exported from `adonis-ai-kit/agents`.
 - Call options on `generateText` / `streamText` (AI SDK v7 primitives): `prepareStep` (per-step control; its `model` is ignored with a warning, `AgentRunner` also drops any `instructions` or `system` it returns), `activeTools`, `providerOptions`, `repairToolCall` (passed through; the AI SDK already lists the allowed tool names in its error), `promptCache` (Anthropic `cacheControl` markers on the system prompt and on the last tool in name order, with the TTL rules validated before the call) and `jsonRecovery` (strips prose around the JSON answer with `schema`; off by default).
 - `stopOnBudget({ maxTokens, maxCostUsd }, costTracker)` in `adonis-ai-kit/budget`: a `stopWhen` condition that ends the tool loop after the step that exceeds a token or cost limit.
 - `extractFirstJsonValue(text)` export.
