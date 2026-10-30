@@ -19,6 +19,7 @@ import type { FallbackEvent } from './models/model_chain.js'
 import type { LanguageModelSource, ResolvedModel } from './models/types.js'
 import type { ConversationCallOptions, ConversationStore } from './conversations/types.js'
 import type { ApprovalSecret } from './approvals/secret.js'
+import type { McpConfig } from './mcp/types.js'
 import type { ApprovalMode, PendingApproval } from './approvals/types.js'
 
 export type CircuitBreakerState = 'closed' | 'open' | 'half_open'
@@ -209,6 +210,8 @@ export interface AiConfig {
   languageModels?: LanguageModelSource
   /** Conversation history (see `adonis-ai-kit/conversations`). Without `store`, an in-memory store is used. */
   conversations?: { store?: ConversationStore }
+  /** MCP servers whose tools are registered in the ToolRegistry (see `adonis-ai-kit/mcp`). Denied until permitted. */
+  mcp?: McpConfig
   /** Human approval of `ask` tools (see `adonis-ai-kit/approvals`). Default mode: `blocking`. */
   approvals?: {
     /** Default for calls that do not set `approvals`. Default: `blocking`. */

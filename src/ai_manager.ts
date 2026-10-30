@@ -28,6 +28,8 @@ import { CostTracker } from './budget/cost_tracker.js'
 import type { ModelPricing } from './budget/types.js'
 import { ConfirmationService } from './guard/confirmation.js'
 import { ToolRegistry } from './guard/registry.js'
+import { McpTools } from './mcp/mcp_tools.js'
+import { isMcpTool } from './mcp/types.js'
 import type { ToolDefinition, ToolPermission } from './guard/types.js'
 import { CircuitBreaker } from './circuit_breaker.js'
 import {
@@ -256,9 +258,17 @@ function pricingMapOf(models: ModelCatalogEntry[]): Record<string, ModelPricing>
   return pricingMap
 }
 
-/** A tool with no explicit permission is allowed. */
-function toolPermission(permissions: Record<string, ToolPermission> | undefined, name: string): ToolPermission {
-  return permissions && Object.hasOwn(permissions, name) ? permissions[name] : 'allow'
+/**
+ * The permission of a tool in a call. An explicit entry wins. Without one, a tool from an MCP server is 'deny'
+ * (fail-closed, even when it is passed here directly), and any other tool is 'allow'.
+ */
+function toolPermission(permissions: Record<string, ToolPermission> | undefined, name: string, tool?: unknown): ToolPermission {
+  if (hasOwnPermission(permissions, name)) return permissions![name]
+  return isMcpTool(tool) ? 'deny' : 'allow'
+}
+
+function hasOwnPermission(permissions: Record<string, ToolPermission> | undefined, name: string): boolean {
+  return permissions !== undefined && Object.hasOwn(permissions, name)
 }
 
 function sleep(ms: number): Promise<void> {
@@ -379,6 +389,7 @@ export class AiManager {
   private lazyLanguageModels?: LanguageModelFactory
   private conversationService?: Conversations
   private approvalSecret?: ApprovalSecret
+  private mcpTools?: McpTools
 
   constructor(
     config: AiConfig,
@@ -387,7 +398,8 @@ export class AiManager {
     toolRegistry?: ToolRegistry,
     catalog?: ModelsDevSource,
     agentLoader?: AgentLoader,
-    confirmation?: ConfirmationService
+    confirmation?: ConfirmationService,
+    mcp?: McpTools
   ) {
     // The secret is kept as an ApprovalSecret, which redacts itself, so `getConfig()` never shows it in clear.
     this.approvalSecret = approvalSecretOf(config)
@@ -407,6 +419,7 @@ export class AiManager {
     this.confirmation = confirmation ?? new ConfirmationService({ logger: this.logger })
     this.catalog = catalog ?? defaultCatalog(config, this.logger)
     this.agentLoader = agentLoader ?? defaultAgentLoader(config, this.logger)
+    this.mcpTools = mcp ?? (config.mcp ? new McpTools(config.mcp, { logger: this.logger }) : undefined)
     this.registerCatalogPricing()
   }
 
@@ -424,6 +437,14 @@ export class AiManager {
 
   getToolRegistry(): ToolRegistry {
     return this.toolRegistry
+  }
+
+  /**
+   * MCP servers as tools: `ai.mcp.registerTools(ai.getToolRegistry())` connects them and registers their tools
+   * (denied until a permission is given). Closed by `shutdown()`.
+   */
+  get mcp(): McpTools {
+    return (this.mcpTools ??= new McpTools(this.config.mcp, { logger: this.logger }))
   }
 
   /**
@@ -476,7 +497,7 @@ export class AiManager {
     }
     // A provider runs its own tools and does not sign approval requests, so an `ask` on one cannot be verified.
     for (const [name, tool] of Object.entries(options.tools ?? {})) {
-      if (toolPermission(options.toolPermissions, name) === 'ask' && (tool as { type?: string }).type === 'provider') {
+      if (toolPermission(options.toolPermissions, name, tool) === 'ask' && (tool as { type?: string }).type === 'provider') {
         throw new AiException(
           `Tool "${name}" is executed by the provider and cannot ask for approval in "resumable" mode`,
           'E_AI_CONFIG_ERROR'
@@ -573,6 +594,7 @@ export class AiManager {
       })
     )
     await Promise.allSettled([languageModels?.shutdown()])
+    await this.mcpTools?.close()
     this.confirmation.dispose()
   }
 
@@ -882,8 +904,13 @@ export class AiManager {
 
     const prepared: Record<string, ToolDefinition> = {}
     for (const [name, tool] of Object.entries(tools)) {
-      const permission = toolPermission(options.toolPermissions, name)
-      if (permission === 'deny') continue
+      const permission = toolPermission(options.toolPermissions, name, tool)
+      if (permission === 'deny') {
+        if (isMcpTool(tool) && !hasOwnPermission(options.toolPermissions, name)) {
+          this.logger?.warn?.(`[AiManager] MCP tool "${name}" is not offered: give it a permission in toolPermissions (the same one the ToolRegistry gives).`)
+        }
+        continue
+      }
 
       let candidate = this.trackExecution(tool as unknown as ToolDefinition, state)
       if (approval) {
@@ -1161,7 +1188,9 @@ export class AiManager {
 
   /** An approved call whose tool is no longer offered cannot run: its approval is denied, so the model sees why. */
   private async settleUnavailableApprovals(run: ApprovalRun, options: GenerateTextOptions): Promise<void> {
-    const offered = Object.keys(options.tools ?? {}).filter((name) => toolPermission(options.toolPermissions, name) !== 'deny')
+    const offered = Object.entries(options.tools ?? {})
+      .filter(([name, tool]) => toolPermission(options.toolPermissions, name, tool) !== 'deny')
+      .map(([name]) => name)
     for (const approval of run.approvals) {
       if (approval.status === 'decided' && approval.approved === true && !offered.includes(approval.toolName)) {
         await run.deny(approval.approvalId, 'tool unavailable')

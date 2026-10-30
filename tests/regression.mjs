@@ -502,4 +502,22 @@ await t('approvals: a run pauses at an ask tool and resumes after the decision',
   assert.equal(counter.n, 1)
   assert.equal(done.text, 'done')
 })
+console.log('mcp')
+const mcpLib = await import(`${P}/mcp/index.js`)
+await t('mcp: MCP tools are denied by default in the registry; an explicit allow exposes them', async () => {
+  const client = {
+    listTools: async () => ({ tools: [{ name: 'read', description: 'Read a file', inputSchema: { type: 'object', properties: {} } }] }),
+    toolsFromDefinitions: (defs) => Object.fromEntries(defs.tools.map((d) => [d.name, { description: d.description, inputSchema: d.inputSchema, execute: async () => ({ ok: d.name }) }])),
+    close: async () => {},
+  }
+  const mcp = new mcpLib.McpTools({ servers: { fs: { command: 'node' } } }, { connect: async () => client, logger: silentLogger })
+  const r = new guardLib.ToolRegistry()
+  await mcp.registerTools(r)
+  assert.deepEqual(Object.keys(r.getToolsForAgent('any')), [])
+  assert.deepEqual(Object.keys(r.getToolsByList(['mcp__fs__read'])), [])
+  r.setAgentPermissions('a', { mcp__fs__read: 'allow' })
+  assert.deepEqual(Object.keys(r.getToolsForAgent('a')), ['mcp__fs__read'])
+  assert.equal(mcpLib.mcpToolName('fs', 'x'.repeat(60)), null)
+  await mcp.close()
+})
 console.log(`\n${passed} passed`)

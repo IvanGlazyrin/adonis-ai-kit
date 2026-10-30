@@ -13,6 +13,7 @@ import { AiException } from '../errors.js'
 import { composeOnDemandPrompt, type AgentPromptConfig } from './loader.js'
 import type { ToolPermission } from './manifest.js'
 import { createLoadSkillTool, LOAD_SKILL_TOOL } from './skill_tool.js'
+import { isMcpTool } from '../mcp/types.js'
 
 /**
  * The caller's `prepareStep` with any `instructions` or `system` it returns removed: the agent's own prompt
@@ -128,11 +129,13 @@ export class AgentRunner {
     return new AgentRunner(this.manager, this.config, { ...this.defaultOptions, ...overrides })
   }
 
-  private permissionFor(toolName: string): ToolPermission {
+  /** The manifest's permission; without one, an MCP tool is `deny` (fail-closed), and other tools get the default. */
+  private permissionFor(toolName: string, tool: unknown): ToolPermission {
     const own = Object.hasOwn(this.config.permissions, toolName)
       ? this.config.permissions[toolName]
       : undefined
-    return own ?? this.defaultOptions.defaultToolPermission ?? 'allow'
+    if (own !== undefined) return own
+    return isMcpTool(tool) ? 'deny' : (this.defaultOptions.defaultToolPermission ?? 'allow')
   }
 
   /**
@@ -157,7 +160,7 @@ export class AgentRunner {
 
     const filtered: ToolSet = {}
     for (const [name, tool] of Object.entries(rawTools)) {
-      const permission = this.permissionFor(name)
+      const permission = this.permissionFor(name, tool)
       if (permission === 'deny') {
         continue
       }

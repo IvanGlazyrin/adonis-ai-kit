@@ -23,6 +23,7 @@ While frameworks like **Laravel AI** and **Prism** bring basic prompt-level abst
 | **Tool Security (Guardrails)** | Fail-closed `ToolRegistry` (default `deny`); in-process HITL for `ask` tools, or resumable approvals (`approvals: 'resumable'`: signed, stored, survive a restart). `AiManager` tools default to `allow` | Opt-in, persisted tool approvals; `Stop` middleware |
 | **Token Budget & Cost** | **Live USD pricing**, ring-buffer memory, cache-read & reasoning tokens | Token counts only, no cost tracking |
 | **Catalog Auto-Discovery** | **models.dev integration** with TTL cache & atomic writes | Defaults hard-coded per provider class plus `config/ai.php`; no live catalog |
+| **MCP tools** | Through `ToolRegistry` only: default `deny`, names `mcp__<server>__<tool>`, pins against changed definitions, `ask` supported. Tool descriptions are treated as untrusted. `AiManager` tools default to `allow`; MCP tools do not | MCP tools need no approval by default (`needsApproval` returns `false`); names `mcp_tools_<tool>` without the server |
 | **Agent Protocols** | **ACP (Agent Client Protocol)** for Claude Code, opencode & subagents | Basic prompt templates |
 | **HTTP Streaming** | **`response.streamAI()` macro** with heartbeats, SSE frames & client-abort hook | PHP chunked response buffers |
 
@@ -489,6 +490,59 @@ const done = await ai.conversations.resolveApprovals(conversation.id, 'user:42',
   provider does not sign approvals. A sub-agent cannot ask (see `agentAsTool`). ACP agents keep `ConfirmationService`.
   A retry after a failed model call re-sends the model the stored results of approved tools; tools with `allow` are
   not approval-gated and run again if the whole turn is retried.
+
+### 11. MCP servers as tools (deny by default)
+
+MCP servers (local stdio or remote HTTP/SSE) reach the model only as tools of `ToolRegistry`. Every tool is denied
+until you give it a permission, and every call passes `toolGuard` and the same `ask` confirmation as any other tool.
+The kit does not install the MCP client: add `@ai-sdk/mcp` (v2, optional peer dependency).
+
+```ts
+// config/ai.ts
+mcp: {
+  servers: {
+    fs: { command: 'node', args: ['./mcp/fs-server.js'], env: { ROOT: '/srv/project' } },        // stdio child process
+    docs: { type: 'http', url: 'https://docs.example.com/mcp', headers: { Authorization: `Bearer ${env.get('DOCS_TOKEN')}` } },
+  },
+  requirePins: false,
+}
+
+// start
+const registry = ai.getToolRegistry()
+await ai.mcp.registerTools(registry)            // connects lazily; a failing server is skipped with a warning
+registry.setAgentPermissions('support', {
+  mcp__fs__read: 'allow',
+  mcp__fs__write: 'ask',                          // needs a confirmation (or resumable approvals)
+})
+
+// per call: pass the tools AND the same permissions
+const tools = registry.getToolsForAgent('support')
+const toolPermissions = Object.fromEntries(Object.keys(tools).map((n) => [n, registry.getAgentPermission('support', n)]))
+await ai.generateText({ prompt, tools, toolPermissions })
+```
+
+- **Permission.** Without an entry an MCP tool is `deny`, both in `ToolRegistry` and in `AiManager` / `AgentRunner` when
+  it is passed directly. `AiManager` looks at `toolPermissions`, not the registry, so pass the registry's permissions
+  there as in the example (otherwise the tool is dropped with a warning). `servers.<key>.tools: ['read']` registers only the
+  listed tools of that server.
+- **Names.** `mcp__<server>__<tool>`; characters outside `[A-Za-z0-9_-]` become `_`. The server key is 1-32 characters of
+  `[A-Za-z0-9_-]`, else `E_AI_CONFIG_ERROR`. A name over 64 characters, or one already registered, is not registered
+  (warning) and is never cut. The 64-character limit and the character set are the providers' documented limits; the kit
+  does not check them against the provider packages.
+- **Descriptions are untrusted.** A server's description is stripped of control characters, capped at 1024 characters and
+  prefixed with `[MCP:<server>]`. `servers.<key>.describe: { read: '…' }` replaces it with text you wrote. Server
+  `instructions` never reach the system prompt.
+- **Pins.** `const digests = await ai.mcp.fingerprint('fs')` returns a digest per tool. Put them in `servers.fs.pins`: a tool
+  whose definition later changes (the "rug pull") is not registered, with a warning. `requirePins: true` also refuses tools without a pin.
+- **Not filtered.** Tool results are not checked. Prompt injection can come through results as well as descriptions. Use
+  `ask` for tools with side effects.
+- **stdio is a command with your process's rights.** The child gets only a whitelist of the environment (for example `PATH`)
+  plus `env` from the config. Run such servers in a container or as a separate user.
+- **Lifecycle.** Servers connect on the first `registerTools()`; a repeated call retries the servers that failed. `ai.shutdown()`
+  closes the clients. Registered tools stay in the registry (their calls then fail), so create a new registry after a close.
+- **Not in v1.** Resources, prompts, completions, elicitation, sampling, MCP Apps, OAuth (`authProvider`; use your own
+  transport later), reconnect or refresh on server notifications, and the kit as an MCP server. Without `@ai-sdk/mcp`,
+  `registerTools` throws `E_AI_MISSING_DEPENDENCY`.
 
 ## Ace CLI Commands
 

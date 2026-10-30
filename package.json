@@ -77,6 +77,10 @@
       "types": "./dist/src/models/index.d.ts",
       "import": "./dist/src/models/index.js"
     },
+    "./mcp": {
+      "types": "./dist/src/mcp/index.d.ts",
+      "import": "./dist/src/mcp/index.js"
+    },
     "./testing": {
       "types": "./dist/src/testing/index.d.ts",
       "import": "./dist/src/testing/index.js"
@@ -117,6 +121,7 @@
     "@ai-sdk/google": "^1.0.0 || ^2.0.0 || ^3.0.0 || ^4.0.0",
     "@ai-sdk/google-vertex": "*",
     "@ai-sdk/groq": "^1.0.0 || ^2.0.0 || ^3.0.0 || ^4.0.0",
+    "@ai-sdk/mcp": "^2.0.0",
     "@ai-sdk/mistral": "*",
     "@ai-sdk/openai": "^1.0.0 || ^2.0.0 || ^3.0.0 || ^4.0.0",
     "@ai-sdk/openai-compatible": "^1.0.0 || ^2.0.0 || ^3.0.0 || ^4.0.0",
@@ -136,6 +141,7 @@
   "devDependencies": {
     "@adonisjs/core": "^7.4.0",
     "@ai-sdk/anthropic": "^4.0.0",
+    "@ai-sdk/mcp": "^2.0.87",
     "@ai-sdk/openai": "^4.0.0",
     "@japa/assert": "^4.2.0",
     "@japa/runner": "^5.4.0",
@@ -182,6 +188,9 @@
       "optional": true
     },
     "@ai-sdk/groq": {
+      "optional": true
+    },
+    "@ai-sdk/mcp": {
       "optional": true
     },
     "@ai-sdk/mistral": {

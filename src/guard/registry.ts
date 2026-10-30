@@ -71,6 +71,11 @@ export class ToolRegistry {
     this.defaultPermission = opts.defaultPermission ?? 'deny'
   }
 
+  /** Whether a tool is registered under `name` (with any permission). */
+  hasTool(name: string): boolean {
+    return this.tools.has(name)
+  }
+
   setLogger(logger: Logger): void {
     this.logger = logger
   }
