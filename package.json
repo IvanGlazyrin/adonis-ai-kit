@@ -57,6 +57,10 @@
       "types": "./dist/src/types.d.ts",
       "import": "./dist/src/types.js"
     },
+    "./conversations": {
+      "types": "./dist/src/conversations/index.d.ts",
+      "import": "./dist/src/conversations/index.js"
+    },
     "./catalog": {
       "types": "./dist/src/catalog/index.d.ts",
       "import": "./dist/src/catalog/index.js"

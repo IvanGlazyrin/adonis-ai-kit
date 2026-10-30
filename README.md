@@ -394,6 +394,58 @@ const result = await ai.generateText({
   is set: a different tool list changes the cached prefix.
 - `jsonRecovery: true` with `schema` strips the prose around the JSON answer (`extractFirstJsonValue`). It is off by default.
 
+### 9. Conversations (stored history, owner checked)
+
+`adonis-ai-kit/conversations` keeps a conversation's history in a store. The owner is required and checked by the kit on
+every call: a conversation of another owner gives the same answer as an unknown id (`ConversationNotFoundError`, or
+`false` from `delete`), and the model is not called.
+
+```ts
+const conversation = await ai.conversations.start('user:42')            // owner: a non-empty string, compared with ===
+const turn = await ai.generateText({
+  prompt: 'What did I ask first?',
+  conversation: { id: conversation.id, owner: 'user:42' },
+})
+turn.conversation // { id, version }: stored after the model answered
+```
+
+- A turn is stored as one unit after the model answers: the user messages and the model's response messages. A call that
+  fails stores nothing. A stream is stored when it ends normally; an aborted or failed stream stores nothing.
+- `version` grows by one per turn; two requests that continue the same version conflict (`ConversationConflictError`),
+  and the kit does not repeat the model call.
+- The system prompt is not stored: it is sent on every call as `system`. `messages` with `role: 'system'` are sent but not stored.
+- `conversation.prepareHistory(messages)` trims what the model sees (for example `pruneMessages` from `ai`). The stored
+  history stays complete.
+- Binary parts (`Uint8Array`, `ArrayBuffer`, `URL`) cannot be stored: the call throws `E_AI_INVALID_ARGUMENT` before the model is called.
+- Stored messages are checked against `ModelMessage` when loaded; a bad one raises `ConversationCorruptError`.
+- The default store is in memory and not durable (`store.durable === false`); a restart drops every conversation, and in
+  `NODE_ENV=production` a warning is logged. Configure a durable store:
+
+```ts
+// config/ai.ts
+export default defineConfig({
+  // ...
+  conversations: { store: new LucidConversationStore() }, // your adapter, see below
+})
+```
+
+**Adapter contract.** The kit has no database dependency. An application adapter implements `ConversationStore`
+(`create`, `load`, `append`, `list`, `delete`, and `durable: true`) and runs the shared contract against itself:
+
+```ts
+import { test } from '@japa/runner'
+import { conversationStoreContract } from 'adonis-ai-kit/testing'
+
+for (const check of conversationStoreContract(() => new LucidConversationStore())) {
+  test(`conversation store: ${check.name}`, () => check.run())
+}
+```
+
+A table layout that fits the port: `conversations(id, owner, agent_name, version, state json, metadata json, created_at,
+updated_at)` and `conversation_messages(id, conversation_id, seq, message json, created_at)`, with an index on
+`(owner, updated_at)`. `append` must check `owner` and `expectedVersion` in one transaction and throw
+`ConversationNotFoundError` or `ConversationConflictError`. Persistence of files is outside the kit.
+
 ## Ace CLI Commands
 
 `adonis-ai-kit` registers helpful Ace commands:

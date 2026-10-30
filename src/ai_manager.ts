@@ -17,6 +17,7 @@ import type {
   ToolSet,
 } from 'ai'
 import { extractFirstJsonValue } from './json_recovery.js'
+import { Conversations } from './conversations/conversations.js'
 import { cacheControlFor, mergeProviderOptions, validatePromptCache } from './prompt_cache.js'
 import { CostTracker } from './budget/cost_tracker.js'
 import type { ModelPricing } from './budget/types.js'
@@ -320,6 +321,18 @@ function withJsonRecovery(
   })
 }
 
+/** The messages a call adds to the conversation: its `messages`, or its `prompt` as one user message. */
+function inputMessages(options: GenerateTextOptions): ModelMessage[] {
+  if (options.messages && options.messages.length > 0) return options.messages
+  if (options.prompt) return [{ role: 'user', content: options.prompt }]
+  throw new AiException('Either "prompt" or non-empty "messages" is required.', 'E_AI_INVALID_ARGUMENT')
+}
+
+/** The call with the stored history placed before its own messages. The prompt is folded into the messages. */
+function withHistory<T extends GenerateTextOptions>(options: T, history: ModelMessage[]): T {
+  return { ...options, prompt: undefined, messages: [...history, ...inputMessages(options)] }
+}
+
 /**
  * Central AI Manager for AdonisJS 7 (analog of Laravel AI / Prism).
  * Orchestrates multi-provider drivers, models.dev catalog discovery, ACP agents,
@@ -338,6 +351,7 @@ export class AiManager {
   private drivers: Map<string, Promise<AiDriver>> = new Map()
   private pricingWarmups: Map<string, Promise<void>> = new Map()
   private lazyLanguageModels?: LanguageModelFactory
+  private conversationService?: Conversations
 
   constructor(
     config: AiConfig,
@@ -386,6 +400,17 @@ export class AiManager {
    */
   getConfirmationService(): ConfirmationService {
     return this.confirmation
+  }
+
+  /**
+   * Conversation store and API (`start`, `get`, `list`, `delete`). Created on first use; an in-memory store unless
+   * `config.conversations.store` is set.
+   */
+  get conversations(): Conversations {
+    return (this.conversationService ??= new Conversations({
+      store: this.config.conversations?.store,
+      logger: this.logger,
+    }))
   }
 
   getCatalog(): ModelsDevSource {
@@ -948,13 +973,18 @@ export class AiManager {
    */
   async generateText(options: GenerateTextOptions): Promise<GenerateTextResult> {
     const agentName = this.agentNameOf(options)
+    const turn = options.conversation
+      ? await this.conversations.openTurn(options.conversation, inputMessages(options))
+      : undefined
 
     const { result, provider, model, usage, durationMs, costUsd } = await this.generateAndRecord(
       agentName,
-      options,
+      turn ? withHistory(options, turn.history) : options,
       options.schema ? Output.object({ schema: options.schema }) : undefined,
       (done) => ({ finishReason: done.finishReason, ...options.metadata })
     )
+    // The turn is stored only now, after the model answered; a call that failed above stored nothing.
+    const conversation = turn ? { id: turn.id, version: await turn.commit(result.response.messages) } : undefined
     this.warnIfOverBudget(agentName, usage.totalTokens, costUsd)
 
     return {
@@ -970,6 +1000,8 @@ export class AiManager {
       // `output` throws when no output was specified, so read it only for schema calls.
       output: options.schema ? result.output : undefined,
       rawResponse: result.response,
+      responseMessages: result.response.messages,
+      conversation,
       durationMs,
     }
   }
@@ -983,6 +1015,11 @@ export class AiManager {
     validatePromptCache(options)
     const startTime = Date.now()
     const agentName = this.agentNameOf(options)
+    const turn = options.conversation
+      ? await this.conversations.openTurn(options.conversation, inputMessages(options))
+      : undefined
+    const callOptions = turn ? withHistory(options, turn.history) : options
+    let streamResponseMessages: ModelMessage[] = []
 
     const controller = new AbortController()
     const signal = options.abortSignal
@@ -995,20 +1032,22 @@ export class AiManager {
     })
 
     const { result: raw, provider, model } = await this.executeWithFallback(
-      { ...options, abortSignal: signal },
+      { ...callOptions, abortSignal: signal },
       async ({ getModel, modelName, providerName, breakerKey, state, acp }) => {
         const pricingReady = this.warmPricing(providerName, modelName)
-        const languageModel = withJsonRecovery(await getModel(), options, acp)
+        const languageModel = withJsonRecovery(await getModel(), callOptions, acp)
 
         let attemptFailed = false
         let accounted = false
         let streamStarted = false
 
+        // `completedMessages` is set only when the stream ended normally: an aborted or failed stream stores nothing.
         const finish = (
           usage: TokenUsage,
           text: string,
           finishReason?: string,
-          extraMetadata: Record<string, unknown> = {}
+          extraMetadata: Record<string, unknown> = {},
+          completedMessages?: ModelMessage[]
         ): void => {
           if (attemptFailed || accounted) return
           accounted = true
@@ -1026,6 +1065,13 @@ export class AiManager {
               )
               this.warnIfOverBudget(agentName, usage.totalTokens, costUsd)
             }
+            if (turn && completedMessages) {
+              try {
+                await turn.commit(completedMessages)
+              } catch (err) {
+                this.logger?.error?.(`[AiManager] Conversation "${turn.id}" was not stored: ${String(err)}`)
+              }
+            }
             settleUsage(usage)
             try {
               options.onFinish?.({ text, usage, costUsd })
@@ -1035,10 +1081,10 @@ export class AiManager {
           })()
         }
 
-        const params = this.buildTextParams(options, languageModel, state, signal)
+        const params = this.buildTextParams(callOptions, languageModel, state, signal)
         const stream = streamText({
           ...params,
-          ...(options.schema ? { output: Output.object({ schema: options.schema }) } : {}),
+          ...(callOptions.schema ? { output: Output.object({ schema: callOptions.schema }) } : {}),
           onChunk: ({ chunk }) => {
             if (chunk.type === 'text-delta') options.onChunk?.(chunk.text)
           },
@@ -1055,7 +1101,10 @@ export class AiManager {
               errorClass: classification.errorClass,
             })
           },
-          onEnd: (event) => finish(normalizeUsage(event.totalUsage), event.text, event.finishReason),
+          onEnd: (event) => {
+            streamResponseMessages = event.responseMessages
+            finish(normalizeUsage(event.totalUsage), event.text, event.finishReason, {}, event.responseMessages)
+          },
           onAbort: (event) => finish(sumUsage(event.steps.map((s) => s.usage)), ''),
         } as StreamCallParams)
 
@@ -1105,6 +1154,7 @@ export class AiManager {
           text,
           usage,
           finishReason: (await raw.finishReason) ?? 'stop',
+          responseMessages: streamResponseMessages,
           provider,
           model,
           durationMs: Date.now() - startTime,

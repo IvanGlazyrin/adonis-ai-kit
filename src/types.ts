@@ -17,6 +17,7 @@ import type { AcpProviderConfig } from './acp/types.js'
 import type { ModelResolver } from './models/catalog_resolver.js'
 import type { FallbackEvent } from './models/model_chain.js'
 import type { LanguageModelSource, ResolvedModel } from './models/types.js'
+import type { ConversationCallOptions, ConversationStore } from './conversations/types.js'
 
 export type CircuitBreakerState = 'closed' | 'open' | 'half_open'
 
@@ -204,6 +205,8 @@ export interface AiConfig {
    * `fakeLanguageModels()` (from `adonis-ai-kit/testing`) is a test replacement.
    */
   languageModels?: LanguageModelSource
+  /** Conversation history (see `adonis-ai-kit/conversations`). Without `store`, an in-memory store is used. */
+  conversations?: { store?: ConversationStore }
 }
 
 /** Options shared by calls that can run over a dynamic model chain. */
@@ -321,6 +324,11 @@ export interface GenerateTextOptions extends ModelChainCallOptions {
    * Off by default. Not applied to string models or ACP agents.
    */
   jsonRecovery?: boolean
+  /**
+   * Continues a stored conversation: the history is sent before this call's messages, and the turn is stored
+   * after the model answered. The owner is checked on every call.
+   */
+  conversation?: ConversationCallOptions
 }
 
 export interface GenerateTextResult {
@@ -337,6 +345,10 @@ export interface GenerateTextResult {
   output?: unknown
   /** Provider response metadata (`result.response` of the AI SDK). */
   rawResponse?: unknown
+  /** The messages the model produced in this call (assistant and tool messages). */
+  responseMessages: ModelMessage[]
+  /** Set when the call continued a conversation: its id and the version after this turn was stored. */
+  conversation?: { id: string; version: number }
   durationMs: number
 }
 
