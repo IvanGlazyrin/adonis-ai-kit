@@ -147,7 +147,7 @@
     "@japa/runner": "^5.4.0",
     "@poppinss/ts-exec": "^1.5.1",
     "@types/node": "^22.0.0",
-    "ai": "^7.0.0",
+    "ai": "^7.0.137",
     "typescript": "^5.0.0 || ^6.0.0"
   },
   "engines": {
