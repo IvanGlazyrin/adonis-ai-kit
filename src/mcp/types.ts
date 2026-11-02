@@ -18,7 +18,10 @@ interface McpServerOptions {
   tools?: string[]
   /** Replaces a tool's description entirely. Trusted: the app wrote it. */
   describe?: Record<string, string>
-  /** Fingerprints from `ai.mcp.fingerprint(server)`, by tool name. A tool whose definition changed is not registered. */
+  /**
+   * Fingerprints from `ai.mcp.fingerprint(server)`, by tool name. A tool whose definition changed is not registered; one
+   * registered before the change then refuses every call.
+   */
   pins?: Record<string, string>
 }
 

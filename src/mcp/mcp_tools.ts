@@ -2,10 +2,11 @@ import { detectToolDrift, fingerprintTools } from 'ai'
 import { normalizeMcpServer } from '../acp/acp_agents.js'
 import type { AcpMcpServerConfig } from '../acp/types.js'
 import { AiException } from '../errors.js'
+import { PolicyViolationError } from '../guard/errors.js'
 import type { Logger } from '../logger.js'
 import type { ToolRegistry } from '../guard/registry.js'
 import type { ToolDefinition } from '../guard/types.js'
-import { safeDescription } from './describe.js'
+import { safeDescription, safeSchemaDescriptions } from './describe.js'
 import { assertServerKey, mcpToolName } from './naming.js'
 import { MCP_TOOL, type McpClientLike, type McpConfig, type McpServerConfig, type McpToolDefinition } from './types.js'
 
@@ -24,6 +25,22 @@ export interface McpToolsOptions {
   loadModule?: () => Promise<McpSdk>
   /** Connects one server. Default: `createMCPClient` with the transport of the server's config. Tests replace it. */
   connect?: (server: string, config: McpServerConfig) => Promise<McpClientLike>
+}
+
+/** The tools a server lists, in the order it lists them, with the client they belong to. */
+interface ListedServer {
+  tools: Record<string, ToolDefinition>
+  names: string[]
+  client: McpClientLike
+}
+
+/** A tool this instance registered: its `server/tool`, its client, the definition, and whether it refuses its calls. */
+interface Registration {
+  origin: string
+  client: McpClientLike
+  tool: ToolDefinition
+  /** A pinned tool that changed: the registration was replaced by one that refuses every call. */
+  refusing: boolean
 }
 
 /** Normalized server definitions by key. Unusable entries are left out (with a warning). */
@@ -64,9 +81,13 @@ export class McpTools {
   private readonly logger?: Logger
   private readonly loadModule: () => Promise<McpSdk>
   private readonly connectServer?: McpToolsOptions['connect']
-  private readonly clients = new Map<string, McpClientLike>()
-  /** Tool name → `server/tool` of the registration this instance made, so a repeated `registerTools()` is a no-op. */
-  private readonly registered = new Map<string, string>()
+  /** The connection of each server, as a promise, so two calls at once share one connection (and one child process). */
+  private readonly clients = new Map<string, Promise<McpClientLike>>()
+  /**
+   * Tool name → the registration this instance made. A repeated `registerTools()` is a no-op; after a server
+   * reconnects, its tools are registered again on the new client.
+   */
+  private readonly registered = new Map<string, Registration>()
 
   constructor(config: McpConfig | undefined, options: McpToolsOptions = {}) {
     this.logger = options.logger
@@ -84,16 +105,20 @@ export class McpTools {
    */
   async registerTools(registry: ToolRegistry): Promise<void> {
     for (const server of Object.keys(this.servers)) {
-      let tools: Record<string, ToolDefinition>
-      let names: string[]
+      let listed: ListedServer
       try {
-        ;({ tools, names } = await this.listServer(server))
+        listed = await this.listServer(server)
       } catch (err) {
         if (err instanceof AiException && err.code === 'E_AI_MISSING_DEPENDENCY') throw err
         this.logger?.warn?.(`[MCP] Server "${server}" is unavailable; its tools are not registered: ${messageOf(err)}`)
         continue
       }
-      await this.registerServerTools(registry, server, tools, names)
+      try {
+        await this.registerServerTools(registry, server, listed)
+      } catch (err) {
+        // One server's tools must not stop the servers after it.
+        this.logger?.warn?.(`[MCP] Server "${server}" tools could not be registered: ${messageOf(err)}`)
+      }
     }
   }
 
@@ -110,7 +135,13 @@ export class McpTools {
   async close(): Promise<void> {
     const open = [...this.clients.entries()]
     this.clients.clear()
-    const settled = await Promise.allSettled(open.map(([, client]) => client.close()))
+    const settled = await Promise.allSettled(
+      open.map(async ([, pending]) => {
+        // A connection that never opened has nothing to close.
+        const client = await pending.catch(() => undefined)
+        await client?.close()
+      })
+    )
     settled.forEach((result, i) => {
       if (result.status === 'rejected') {
         this.logger?.warn?.(`[MCP] Closing server "${open[i][0]}" failed: ${messageOf(result.reason)}`)
@@ -118,42 +149,69 @@ export class McpTools {
     })
   }
 
-  private async registerServerTools(
-    registry: ToolRegistry,
-    server: string,
-    tools: Record<string, ToolDefinition>,
-    names: string[]
-  ): Promise<void> {
+  private async registerServerTools(registry: ToolRegistry, server: string, listed: ListedServer): Promise<void> {
+    const { tools, names, client } = listed
     const config = this.servers[server]
     const selected = names.filter((name) => tools[name] !== undefined && (!config.tools || config.tools.includes(name)))
     const drifted = await this.driftedTools(config, tools, selected)
     for (const name of selected) {
       const tool = tools[name]
       const origin = `${server}/${name}`
+      const toolName = mcpToolName(server, name)
+      const prior = toolName === null ? undefined : this.registered.get(toolName)
+      // This instance's earlier registration of the tool, still in `registry` (there is no unregister).
+      let kept = toolName !== null && prior?.origin === origin && registry.hasTool(toolName) ? prior : undefined
+      // A kept registration that still runs is from a previous connection: on the same connection an unchanged tool is
+      // skipped below before its schema is cleaned, `requirePins` does not change, and a changed pinned tool gets a
+      // refusing registration.
+      const refused = (reason: string) =>
+        this.logger?.warn?.(
+          !kept
+            ? `[MCP] Tool "${origin}" ${reason}; not registered.`
+            : kept.refusing
+              ? `[MCP] Tool "${origin}" ${reason}; the new definition is not registered, and calls to the registered tool are refused.`
+              : `[MCP] Tool "${origin}" ${reason}; the new definition is not registered. The earlier registration is kept and still uses the previous connection, which is closed, so its calls fail.`
+        )
       if (drifted.has(name)) {
-        this.logger?.warn?.(`[MCP] Tool "${origin}" changed since it was pinned; not registered. Review it, then update its pin.`)
+        if (kept && !kept.refusing && toolName !== null) {
+          // There is no unregister: the registration is replaced by one that refuses its calls, so the changed tool never runs.
+          kept = { origin, client, tool: refusingTool(kept.tool, toolName, origin), refusing: true }
+          registry.registerTool(toolName, kept.tool)
+          this.registered.set(toolName, kept)
+        }
+        refused('changed since it was pinned (review it, then update its pin)')
         continue
       }
       if (this.requirePins && !(config.pins && Object.hasOwn(config.pins, name))) {
-        this.logger?.warn?.(`[MCP] Tool "${origin}" has no pin and requirePins is set; not registered.`)
+        refused('has no pin and requirePins is set')
         continue
       }
-      const toolName = mcpToolName(server, name)
       if (toolName === null) {
         this.logger?.warn?.(`[MCP] Tool "${server}/${name}" has no name within 64 characters; not registered.`)
         continue
       }
-      if (this.registered.get(toolName) === origin) continue
-      if (registry.hasTool(toolName)) {
+      // A refusing registration is replaced once the tool matches its pin again.
+      if (prior?.origin === origin && prior.client === client && !prior.refusing) continue
+      // This server's own tool from a client that has since closed is replaced; another tool with the name is not.
+      if (registry.hasTool(toolName) && prior?.origin !== origin) {
         this.logger?.warn?.(`[MCP] Tool name "${toolName}" is already registered; "${origin}" is not registered.`)
         continue
       }
-      registry.registerTool(toolName, {
+      let inputSchema: unknown
+      try {
+        inputSchema = cleanedInputSchema(tool.inputSchema)
+      } catch (err) {
+        refused(`has an input schema that cannot be cleaned (${messageOf(err)})`)
+        continue
+      }
+      const definition = {
         ...tool,
         description: this.descriptionOf(server, name, tool),
+        inputSchema,
         [MCP_TOOL]: { server, tool: name },
-      })
-      this.registered.set(toolName, origin)
+      } as ToolDefinition
+      registry.registerTool(toolName, definition)
+      this.registered.set(toolName, { origin, client, tool: definition, refusing: false })
     }
   }
 
@@ -177,19 +235,34 @@ export class McpTools {
   }
 
   /** The server's tools by name, and the names in the order the server lists them. Connects on first use. */
-  private async listServer(server: string): Promise<{ tools: Record<string, ToolDefinition>; names: string[] }> {
-    const client = await this.clientOf(server)
-    const definitions = await listAllTools(client)
+  private async listServer(server: string): Promise<ListedServer> {
+    const pending = this.clientOf(server)
+    const client = await pending
+    let definitions: McpToolDefinition[]
+    try {
+      definitions = await listAllTools(client)
+    } catch (err) {
+      // A server that stopped answering is dropped, so the next call connects it again.
+      this.dropClient(server, pending)
+      await client.close().catch(() => undefined)
+      throw err
+    }
     const tools = client.toolsFromDefinitions({ tools: definitions })
-    return { tools, names: definitions.map((def) => def.name) }
+    return { tools, names: definitions.map((def) => def.name), client }
   }
 
-  private async clientOf(server: string): Promise<McpClientLike> {
-    const connected = this.clients.get(server)
-    if (connected) return connected
-    const client = await this.connect(server, this.servers[server])
-    this.clients.set(server, client)
-    return client
+  /** The server's connection; concurrent callers share the same promise. A failed connection is not kept. */
+  private clientOf(server: string): Promise<McpClientLike> {
+    const cached = this.clients.get(server)
+    if (cached) return cached
+    const pending = this.connect(server, this.servers[server])
+    this.clients.set(server, pending)
+    pending.catch(() => this.dropClient(server, pending))
+    return pending
+  }
+
+  private dropClient(server: string, pending: Promise<McpClientLike>): void {
+    if (this.clients.get(server) === pending) this.clients.delete(server)
   }
 
   private connect(server: string, config: McpServerConfig): Promise<McpClientLike> {
@@ -217,6 +290,31 @@ export class McpTools {
       )
     }
   }
+}
+
+/**
+ * The tool's parameter schema with every description cleaned. The schema wrapper (`jsonSchema(...)`) keeps its own
+ * fields, including its marker, because the copy is a spread of the wrapper.
+ */
+function cleanedInputSchema(schema: unknown): unknown {
+  if (schema === null || typeof schema !== 'object' || !('jsonSchema' in schema)) return schema
+  return { ...schema, jsonSchema: safeSchemaDescriptions((schema as { jsonSchema: unknown }).jsonSchema) }
+}
+
+/**
+ * The registered `tool` (its pinned description and schema, its `MCP_TOOL` mark) with an `execute` that refuses every
+ * call with `PolicyViolationError`, because the server's tool changed since it was pinned.
+ */
+function refusingTool(tool: ToolDefinition, toolName: string, origin: string): ToolDefinition {
+  return {
+    ...tool,
+    execute: async () => {
+      throw new PolicyViolationError(
+        toolName,
+        `MCP tool "${origin}" changed since it was pinned; review the change and update its pin to use it`
+      )
+    },
+  } as ToolDefinition
 }
 
 /** Pages of `listTools` read at most; a server that keeps answering with new cursors is cut off here. */
