@@ -155,6 +155,8 @@ function classifyByMessage(message: string): ErrorClass | undefined {
  * The HTTP status and error code are looked up through the `cause` / `lastError` chain.
  */
 export function classifyErrorClass(error: unknown): ErrorClass {
+  // Its message quotes the agent's own error, so the text of that error must not decide the class.
+  if (error instanceof AcpCallFailedError) return 'unknown'
   const isObject = error !== null && typeof error === 'object'
   const name = isObject ? (error as { name?: unknown }).name : undefined
   const message = isObject ? String((error as { message?: unknown }).message ?? '') : ''

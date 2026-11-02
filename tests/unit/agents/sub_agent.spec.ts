@@ -189,6 +189,24 @@ test.group('sub-agent isolation', () => {
     assert.isTrue((error as AcpCallFailedError).sideEffectsPossible)
   })
 
+  test('an ACP failure inside a sub-agent stops the parent run, so the model cannot start the agent again', async ({ assert }) => {
+    const sub = fakeModel([{ error: new AcpCallFailedError('claude-code', new Error('timeout')) }, { text: 'never' }])
+    const researcher = new AgentRunner(managerFor(sub), agentConfig())
+    const parent = fakeModel([
+      { toolCalls: [{ name: 'researcher', input: { task: 'T' } }] },
+      { toolCalls: [{ name: 'researcher', input: { task: 'T again' } }] },
+      { text: 'never reached' },
+    ])
+
+    const error = await new AgentRunner(managerFor(parent), parentConfig)
+      .run({ prompt: 'go', tools: { researcher: agentAsTool(researcher) } })
+      .then(() => null, (err: unknown) => err)
+
+    assert.instanceOf(error, AcpCallFailedError)
+    sub.assertCalledTimes(1)
+    parent.assertCalledTimes(1)
+  })
+
   test('sub-agent cost is recorded under its own agent name', async ({ assert }) => {
     const model = fakeModel([
       { toolCalls: [{ name: 'researcher', input: { task: 'T' } }] },

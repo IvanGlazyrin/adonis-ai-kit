@@ -7,6 +7,7 @@ import type {
 } from './types.js'
 import type { ConfirmationService } from './confirmation.js'
 import { PolicyViolationError } from './errors.js'
+import { resultOf } from '../tool_stream.js'
 
 export interface ToolAccessOptions {
   guard?: ActionGuard
@@ -152,7 +153,7 @@ export class ToolRegistry {
             if (declined) return declined
           }
           markExecuted()
-          return originalExecute(args, execOptions)
+          return resultOf(originalExecute(args, execOptions))
         })
       },
     }
@@ -294,22 +295,31 @@ export class ToolRegistry {
    * For `approvals: 'resumable'`: the tools an agent may use, and the AI SDK approval status of each. `ask` tools are
    * returned without the confirmation wrapper (the run pauses instead), with `user-approval`; `allow` tools get
    * `not-applicable`. `options.guard` still checks every tool. `deny` tools are left out.
+   *
+   * Pass `toolPermissions` together with `tools` to `AiManager`. Without it the manager reads a non-MCP tool as `allow`,
+   * so an `ask` tool would run with no approval.
    */
   getToolsWithApprovals(
     agentName: string,
     options: ToolAccessOptions = {}
-  ): { tools: Record<string, ToolDefinition>; toolApproval: Record<string, 'user-approval' | 'not-applicable'> } {
+  ): {
+    tools: Record<string, ToolDefinition>
+    toolApproval: Record<string, 'user-approval' | 'not-applicable'>
+    toolPermissions: Record<string, ToolPermission>
+  } {
     const tools: Record<string, ToolDefinition> = {}
     const toolApproval: Record<string, 'user-approval' | 'not-applicable'> = {}
+    const toolPermissions: Record<string, ToolPermission> = {}
 
     for (const [name, tool] of this.tools.entries()) {
       const permission = this.permissionFor(agentName, name, options)
       if (permission === 'deny') continue
+      toolPermissions[name] = permission
       toolApproval[name] = permission === 'ask' ? 'user-approval' : 'not-applicable'
       tools[name] = options.guard ? this.wrapTool(name, tool, { ...options, permission: 'allow' }) : tool
     }
 
-    return { tools, toolApproval }
+    return { tools, toolApproval, toolPermissions }
   }
 
   /** The per-call map decides when given (the registry default for names it omits); otherwise the agent matrix. */

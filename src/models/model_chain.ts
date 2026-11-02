@@ -185,9 +185,9 @@ function acquireCandidate(
 }
 
 /**
- * The candidate to fall back to. Throws the attempt's own error, after logging why, when the failure
- * may not fall back: a non-retryable failure, a failure after tools ran, a retryable failure of an ACP agent
- * (its call may have run side effects), or no candidate left.
+ * The candidate to fall back to. Throws, after logging why, when the failure may not fall back: a non-retryable
+ * failure, a failure after tools ran, or no candidate left. The attempt's own error is thrown, except for a retryable
+ * failure of an ACP agent (its call may have run side effects): that one is an `AcpCallFailedError`.
  */
 function fallbackTarget(input: {
   candidate: ChainCandidate

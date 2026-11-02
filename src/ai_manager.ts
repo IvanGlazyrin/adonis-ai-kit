@@ -15,6 +15,7 @@ import type {
   ModelMessage,
   PrepareStepFunction,
   StepResult,
+  StopCondition,
   ToolSet,
 } from 'ai'
 import { extractFirstJsonValue } from './json_recovery.js'
@@ -28,11 +29,13 @@ import { CostTracker } from './budget/cost_tracker.js'
 import type { ModelPricing } from './budget/types.js'
 import { ConfirmationService } from './guard/confirmation.js'
 import { ToolRegistry } from './guard/registry.js'
+import { isAsyncIterable, resultOf } from './tool_stream.js'
 import { McpTools } from './mcp/mcp_tools.js'
 import { isMcpTool } from './mcp/types.js'
 import type { ToolDefinition, ToolPermission } from './guard/types.js'
 import { CircuitBreaker } from './circuit_breaker.js'
 import {
+  AcpCallFailedError,
   AiException,
   CascadingFallbackError,
   ProviderConfigError,
@@ -86,6 +89,11 @@ interface AttemptState {
   toolsExecuted: boolean
   /** Usage of every step this attempt finished, so a failed attempt's tokens can still be recorded. */
   stepUsages: LanguageModelUsage[]
+  /**
+   * The first ACP failure a tool of this run raised (a sub-agent running an ACP agent, for example). It stops the run
+   * after the step, so the model cannot start the same agent again, and the call then fails with it.
+   */
+  acpCallFailed?: AcpCallFailedError
 }
 
 interface AttemptContext {
@@ -267,6 +275,11 @@ function toolPermission(permissions: Record<string, ToolPermission> | undefined,
   return isMcpTool(tool) ? 'deny' : 'allow'
 }
 
+/** Whether a tool that runs locally declares the AI SDK's own `needsApproval` (`true` or a function). */
+function hasNativeApproval(tool: ToolDefinition): boolean {
+  return typeof tool.execute === 'function' && tool.needsApproval !== undefined && tool.needsApproval !== null && tool.needsApproval !== false
+}
+
 function hasOwnPermission(permissions: Record<string, ToolPermission> | undefined, name: string): boolean {
   return permissions !== undefined && Object.hasOwn(permissions, name)
 }
@@ -276,6 +289,16 @@ function sleep(ms: number): Promise<void> {
     const timer = setTimeout(resolve, ms)
     timer.unref?.()
   })
+}
+
+/** The chunks of a streaming tool, passed on as they come. An error from the stream is recorded, then thrown on. */
+async function* recordedStream(stream: AsyncIterable<unknown>, record: (err: unknown) => void): AsyncGenerator<unknown> {
+  try {
+    for await (const chunk of stream) yield chunk
+  } catch (err) {
+    record(err)
+    throw err
+  }
 }
 
 /**
@@ -346,6 +369,46 @@ function inputMessages(options: GenerateTextOptions): ModelMessage[] {
 /** The call with the stored history placed before its own messages. The prompt is folded into the messages. */
 function withHistory<T extends GenerateTextOptions>(options: T, history: ModelMessage[], input: ModelMessage[]): T {
   return { ...options, prompt: undefined, messages: [...history, ...input] }
+}
+
+/**
+ * A `prompt` is one string. The AI SDK also accepts a message list there, which would skip the check of approval parts
+ * that `messages` gets, so anything but a string is refused.
+ */
+function assertPromptIsString(prompt: unknown): void {
+  if (prompt !== undefined && prompt !== null && typeof prompt !== 'string') {
+    throw new AiException('prompt must be a string; send a message list as `messages`.', 'E_AI_INVALID_ARGUMENT')
+  }
+}
+
+/**
+ * Approval parts only come from the library: a `resumable` run writes them, and `resolveApprovals` answers them. A caller
+ * that sends its own would replay a signed request into another conversation, so such messages are refused.
+ */
+function assertNoApprovalParts(messages: ModelMessage[] | undefined): void {
+  const carriesApproval = (messages ?? []).some(
+    (message) =>
+      Array.isArray(message.content) &&
+      message.content.some((part) => {
+        const type = (part as { type?: unknown }).type
+        return type === 'tool-approval-request' || type === 'tool-approval-response'
+      })
+  )
+  if (carriesApproval) {
+    throw new AiException(
+      'Messages may not contain tool approval parts: approvals are answered with ai.conversations.resolveApprovals (E_AI_APPROVAL_REPLAY).',
+      'E_AI_APPROVAL_REPLAY'
+    )
+  }
+}
+
+/**
+ * The caller's stop conditions, plus one that ends the run once a tool raised an ACP failure. Without a stop condition
+ * the SDK runs one step, so that default is kept.
+ */
+function stopConditionsOf(options: GenerateTextOptions, state: AttemptState): StopCondition<ToolSet>[] {
+  const own = options.stopWhen ?? stepCountIs(options.maxSteps ? options.maxSteps : 1)
+  return [...(Array.isArray(own) ? own : [own]), () => state.acpCallFailed !== undefined]
 }
 
 /** The approval secret of a config: a plain value is wrapped, so the config copy never holds it in clear. */
@@ -804,14 +867,15 @@ export class AiManager {
     acp: boolean
   ): void {
     if (kind === 'fatal') throw err
-    if (state.toolsExecuted || (acp && kind === 'retryable')) {
-      const message = err instanceof Error ? err.message : String(err)
-      const reason = state.toolsExecuted ? 'after executing tools' : 'after a retryable ACP agent failure'
-      this.logger?.error?.(
-        `[AiManager] "${breakerKey}" failed ${reason} (${message}); not retrying on another provider to avoid repeating side effects.`
-      )
-      throw err
-    }
+    if (!state.toolsExecuted && !(acp && kind === 'retryable')) return
+    const message = err instanceof Error ? err.message : String(err)
+    const reason = acp && kind === 'retryable' ? 'after a retryable ACP agent failure' : 'after executing tools'
+    this.logger?.error?.(
+      `[AiManager] "${breakerKey}" failed ${reason} (${message}); not retrying on another provider to avoid repeating side effects.`
+    )
+    // The caller gets the typed error, so it can tell an ACP agent that may have changed files from a plain failure.
+    if (acp && kind === 'retryable') throw new AcpCallFailedError(breakerKey, err)
+    throw err
   }
 
   /**
@@ -825,7 +889,10 @@ export class AiManager {
     return async (ctx) => {
       const startTime = Date.now()
       try {
-        return await operation(ctx)
+        const value = await operation(ctx)
+        // A tool that ran an ACP agent stopped the run; the call fails with that error, not with its partial result.
+        if (ctx.state.acpCallFailed) throw ctx.state.acpCallFailed
+        return value
       } catch (err) {
         const usage = failedAttemptUsage(err, ctx.state)
         if (usage.totalTokens > 0) {
@@ -895,8 +962,8 @@ export class AiManager {
 
   /**
    * Applies tool permissions and the tool guard, and tracks whether any tool actually ran.
-   * `deny` tools are dropped, `ask` tools need a human confirmation (fail-closed without one),
-   * and every tool passes through `toolGuard.guard` when provided.
+   * `deny` tools are dropped, `ask` tools need a human confirmation (fail-closed without one), so do tools with the
+   * SDK's own `needsApproval` in `blocking` mode, and every tool passes through `toolGuard.guard` when provided.
    */
   private prepareTools(options: GenerateTextOptions, state: AttemptState, approval?: ApprovalContext): ToolSet | undefined {
     const tools = options.tools
@@ -917,6 +984,8 @@ export class AiManager {
         // `resumable`: an `ask` tool is not confirmed in memory; the run pauses at its approval request instead.
         if (options.toolGuard?.guard) candidate = this.guardTool(name, candidate, 'allow', options.toolGuard)
         if (approval.run) candidate = this.approvalExecution(candidate, approval.run)
+      } else if (hasNativeApproval(candidate)) {
+        candidate = this.nativeApprovalTool(name, candidate, permission, options.toolGuard)
       } else if (permission === 'ask' || options.toolGuard?.guard) {
         candidate = this.guardTool(name, candidate, permission, options.toolGuard)
       }
@@ -943,15 +1012,33 @@ export class AiManager {
     }
   }
 
-  /** Marks the attempt as having run tools, so the chain never falls back after a side effect. */
+  /**
+   * Marks the attempt as having run tools, so the chain never falls back after a side effect. An ACP failure that a
+   * tool throws is recorded too: the SDK turns a tool's error into a tool result, so the run would go on without it.
+   */
   private trackExecution(tool: ToolDefinition, state: AttemptState): ToolDefinition {
     const original = tool.execute?.bind(tool)
     if (!original) return tool
+    const record = (err: unknown) => {
+      if (err instanceof AcpCallFailedError) state.acpCallFailed ??= err
+    }
     return {
       ...tool,
       execute: (args: unknown, execOptions?: unknown) => {
         state.toolsExecuted = true
-        return original(args, execOptions)
+        let result: unknown
+        try {
+          result = original(args, execOptions)
+        } catch (err) {
+          record(err)
+          throw err
+        }
+        // The SDK checks for an async generator on the value `execute` returns, so it is passed on as it is.
+        if (isAsyncIterable(result)) return recordedStream(result, record)
+        return Promise.resolve(result).catch((err: unknown) => {
+          record(err)
+          throw err
+        })
       },
     }
   }
@@ -967,16 +1054,44 @@ export class AiManager {
       ...tool,
       execute: async (args: unknown, execOptions?: unknown) => {
         const toolCallId = (execOptions as { toolCallId?: string } | undefined)?.toolCallId
-        if (toolCallId === undefined) return original(args, execOptions)
+        if (toolCallId === undefined) return resultOf(original(args, execOptions))
         await run.begin(toolCallId)
         try {
-          const output = await original(args, execOptions)
+          const output = await resultOf(original(args, execOptions))
           await run.finish(toolCallId, outputOfResult(output))
           return output
         } catch (err) {
           await run.finish(toolCallId, outputOfError(err))
           throw err
         }
+      },
+    }
+  }
+
+  /**
+   * A tool with the AI SDK's own `needsApproval`, in `blocking` mode. The SDK would stop at its approval request and
+   * nothing in this mode answers one, so the flag is removed and the call is confirmed like an `ask` tool. A
+   * `needsApproval` function still decides per call.
+   */
+  private nativeApprovalTool(
+    name: string,
+    tool: ToolDefinition,
+    permission: ToolPermission,
+    guardOptions: GenerateTextOptions['toolGuard']
+  ): ToolDefinition {
+    const { needsApproval, ...rest } = tool
+    const asked = this.guardTool(name, rest, 'ask', guardOptions)
+    if (typeof needsApproval !== 'function') return asked
+    const plain = permission === 'ask' || guardOptions?.guard ? this.guardTool(name, rest, permission, guardOptions) : rest
+    return {
+      ...asked,
+      execute: async (args: unknown, execOptions?: { toolCallId?: string; messages?: ModelMessage[]; context?: unknown }) => {
+        const needed = await needsApproval(args, {
+          toolCallId: execOptions?.toolCallId,
+          messages: execOptions?.messages ?? [],
+          context: execOptions?.context,
+        })
+        return (needed ? asked : plain).execute!(args, execOptions)
       },
     }
   }
@@ -1026,7 +1141,7 @@ export class AiManager {
       prepareStep: this.prepareStepOf(options.prepareStep),
       providerOptions: options.providerOptions,
       repairToolCall: options.repairToolCall,
-      stopWhen: options.stopWhen ?? (options.maxSteps ? stepCountIs(options.maxSteps) : undefined),
+      stopWhen: stopConditionsOf(options, state),
       maxRetries: options.maxRetries,
       onToolExecutionStart: sideEffects.onToolExecutionStart,
       onStepEnd: async (step: StepResult<ToolSet>) => {
@@ -1123,6 +1238,8 @@ export class AiManager {
    * A `resumable` run that stops at an approval stores its state and returns `status: 'awaiting-approval'`.
    */
   private async generateTextTurn(options: GenerateTextOptions, resume?: ResumeContext): Promise<GenerateTextResult> {
+    assertPromptIsString(options.prompt)
+    if (!resume) assertNoApprovalParts(options.messages)
     const agentName = this.agentNameOf(options)
     const approval = this.approvalContextOf(options, resume)
     let turn: ConversationTurn | undefined
@@ -1221,6 +1338,8 @@ export class AiManager {
    */
   async streamText(options: StreamTextOptions): Promise<StreamTextResult> {
     validatePromptCache(options)
+    assertPromptIsString(options.prompt)
+    assertNoApprovalParts(options.messages)
     const startTime = Date.now()
     const agentName = this.agentNameOf(options)
     const approval = this.approvalContextOf(options)
@@ -1398,6 +1517,8 @@ export class AiManager {
    * (via `generateText` with `Output.object`, as `generateObject` is deprecated in AI SDK v7).
    */
   async generateObject<T>(options: GenerateObjectOptions<T>): Promise<GenerateObjectResult<T>> {
+    assertPromptIsString(options.prompt)
+    assertNoApprovalParts(options.messages)
     const { result, provider, model, usage, durationMs, costUsd } = await this.generateAndRecord(
       this.agentNameOf(options),
       options,
