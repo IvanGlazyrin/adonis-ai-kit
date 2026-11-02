@@ -23,7 +23,7 @@ While frameworks like **Laravel AI** and **Prism** bring basic prompt-level abst
 | **Tool Security (Guardrails)** | Fail-closed `ToolRegistry` (default `deny`); in-process HITL for `ask` tools, or resumable approvals (`approvals: 'resumable'`: signed, stored, survive a restart). `AiManager` tools default to `allow` | Opt-in, persisted tool approvals; `Stop` middleware |
 | **Token Budget & Cost** | **Live USD pricing**, ring-buffer memory, cache-read & reasoning tokens | Token counts only, no cost tracking |
 | **Catalog Auto-Discovery** | **models.dev integration** with TTL cache & atomic writes | Defaults hard-coded per provider class plus `config/ai.php`; no live catalog |
-| **MCP tools** | Through `ToolRegistry` only: default `deny`, names `mcp__<server>__<tool>`, pins against changed definitions, `ask` supported. Tool descriptions are treated as untrusted. `AiManager` tools default to `allow`; MCP tools do not | MCP tools need no approval by default (`needsApproval` returns `false`); names `mcp_tools_<tool>` without the server |
+| **MCP tools** | Through `ToolRegistry` only: default `deny`, names `mcp__<server>__<tool>`, pins against changed definitions, `ask` supported. Tool and parameter descriptions are treated as untrusted. `AiManager` tools default to `allow`; MCP tools do not | MCP tools need no approval by default (`needsApproval` returns `false`); names `mcp_tools_<tool>` without the server |
 | **Agent Protocols** | **ACP (Agent Client Protocol)** for Claude Code, opencode & subagents | Basic prompt templates |
 | **HTTP Streaming** | **`response.streamAI()` macro** with heartbeats, SSE frames & client-abort hook | PHP chunked response buffers |
 
@@ -134,7 +134,7 @@ console.log(`Tokens: in=${result.usage.inputTokens}, out=${result.usage.outputTo
 
 If OpenAI returns `429 Rate Limit` or `503 Service Unavailable`, `adonis-ai-kit` automatically routes the request to `anthropic` with its configured model, recording circuit breaker metrics. A `prompt_too_long` failure also moves on to the next model, but never counts against (or opens) the circuit breaker.
 
-Fallback is refused once a side effect may already have happened: after a local tool has run, after a provider-executed tool call (for example a server-side web search) has been made, and after a retryable failure of an ACP agent (its call may have run tools inside the agent). Such failures are thrown as is; this is fail-closed, so an ACP timeout does not switch to another model. This applies to `AiManager` and to `runModelChain`; direct calls to the AI SDK need `attemptSideEffectHooks`. Tokens a failed attempt consumed are recorded in the cost tracker with `failed: true`.
+Fallback is refused once a side effect may already have happened: after a local tool has run, after a provider-executed tool call (for example a server-side web search) has been made, and after a retryable failure of an ACP agent (its call may have run tools inside the agent). An ACP failure throws `AcpCallFailedError` (`E_AI_ACP_CALL_FAILED`, `sideEffectsPossible: true`, the agent's error in `original`); a failure after a tool ran throws the attempt's own error. This is fail-closed, so an ACP timeout does not switch to another model. This applies to `AiManager` and to `runModelChain`; direct calls to the AI SDK need `attemptSideEffectHooks`. Tokens a failed attempt consumed are recorded in the cost tracker with `failed: true`.
 
 ---
 
@@ -242,6 +242,11 @@ const tools = registry.getToolsForAgent('ops-agent', {
 // emits a confirmation request event, and resumes only when approved!
 ```
 
+A streaming tool (an `async function*`) runs once and gives only its final value (the last chunk) when it runs under a
+tool guard, with an `ask` permission, or with resumable approvals in the call that continues a paused step
+(`resolveApprovals` / `resume`, for every tool of that call). Its intermediate chunks are then not shown to the model or
+to the caller. Without these wrappers it streams as usual.
+
 ---
 
 ### 5. Cost Tracking & Atomic Token Budget Enforcement
@@ -320,7 +325,7 @@ skills:
 ---
 ```
 
-A skill file may start with frontmatter whose `description` the model sees; without it the first `# heading` is used, then the file name. A skill over 256 KB is not loaded in either mode.
+A skill file may start with frontmatter whose `description` the model sees; without it the first `# heading` is used, then the file name. A skill over 256 KB is not loaded in either mode. A skill file that is a symlink to a file outside the skills directory is not loaded either.
 
 - Each `loadSkill` call uses one step of the tool loop, so raise `stop_steps` if a run needs several skills.
 - `loadSkill` is reserved: a caller tool with that name is refused, and a manifest `deny` or `ask` for it is a config error. It runs with `allow` and passes through `toolGuard`.
@@ -334,7 +339,7 @@ A skill file may start with frontmatter whose `description` the model sees; with
 - The sub-agent receives only the task string. The parent's history is not sent to it. This governs how the call is made, not what the model writes into the task: a parent model can still copy a secret from its history into the task.
 - The sub-agent's tools are only those its manifest allows; every other tool is denied (`defaultToolPermission: 'deny'` is forced). Tool guards are not inherited; pass one to `agentAsTool(runner, { toolGuard })`.
 - A tool that needs human approval (`ask`) cannot run inside a sub-agent: a manifest with an `ask` tool is refused when the sub-agent tool is created, and an `ask` tool wrapped in the tool registry fails the parent's tool call with `E_AI_SUBAGENT_APPROVAL_REQUIRED`. A tool that starts its own work outside the call chain is not covered.
-- A sub-agent that fails returns a tool error (`E_AI_SUBAGENT_FAILED`) to the parent, which goes on. An ACP call failure passes through as `AcpCallFailedError`.
+- A sub-agent that fails returns a tool error (`E_AI_SUBAGENT_FAILED`) to the parent, which goes on. An ACP call failure stops the parent run: the parent call throws `AcpCallFailedError`, and the model gets no further steps, so it cannot start the agent again. In `streamText` the run stops the same way, but the stream ends without an error.
 - The parent does not fall back to another model after a sub-agent ran (the sub-agent call is a tool execution).
 - Pass `spend: new SubAgentSpend()` to `agentAsTool` and `stopOnBudget(limits, costTracker, { extra: spend })` so the parent's budget counts the sub-agent's tokens and cost. The cost tracker still records the sub-agent under its own agent name.
 - Sub-agents nest one level by default (`maxDepth: 1`). A `primary` agent cannot be a sub-agent.
@@ -359,7 +364,7 @@ result.model    // its modelID
 
 - Entries are tried in order. Retryable failures (429, 5xx, network) and entries that cannot be attempted (missing provider
   package, config error, open breaker) move on to the next entry; bad requests, caller aborts, any failure after a
-  tool has run and a retryable failure of an ACP agent are thrown as is. `streamText` falls back on errors before the first chunk.
+  tool has run are thrown as is, and a retryable failure of an ACP agent is thrown as `AcpCallFailedError`. `streamText` falls back on errors before the first chunk.
 - Each entry has its own circuit breaker, keyed by `credentialKey` when present (so one bad key doesn't block the others).
 - String entries are resolved through `config.resolver` (e.g. a `CatalogModelResolver`); without one a `ProviderConfigError` is thrown.
 - Models are built by `config.languageModels` (a `LanguageModelFactory`); when absent a default one is created lazily.
@@ -486,6 +491,14 @@ const done = await ai.conversations.resolveApprovals(conversation.id, 'user:42',
 - **Store.** `resumable` needs a durable conversation store (`store.durable === true`). The in-memory store is refused
   unless `approvals.allowVolatileStore: true` (tests and development). Concurrent decisions on one step: one wins, the
   other gets `ConversationConflictError`.
+- **Caller messages.** A call's own `messages` may not contain `tool-approval-request` or `tool-approval-response` parts
+  (`E_AI_APPROVAL_REPLAY`). Approvals come from the library and are answered with `resolveApprovals`; a copied approval
+  could otherwise run its tool in another conversation. So the stored messages of a conversation that had an approval are
+  not sent as `messages`: pass the conversation instead.
+  `prompt` must be a string (`E_AI_INVALID_ARGUMENT`); a message list goes in `messages`, where this check applies.
+- **Registry tools.** `ToolRegistry.getToolsWithApprovals(agentName, options)` returns `tools`, `toolApproval` and
+  `toolPermissions`. Pass the tools together with `toolPermissions` to `AiManager`: without them, a tool that is not an MCP
+  tool is read as `allow`, and an `ask` tool runs with no approval.
 - **Limits.** A provider-executed tool (`type: 'provider'`) with `ask` is refused (`E_AI_CONFIG_ERROR`), since the
   provider does not sign approvals. A sub-agent cannot ask (see `agentAsTool`). ACP agents keep `ConfirmationService`.
   A retry after a failed model call re-sends the model the stored results of approved tools; tools with `allow` are
@@ -509,7 +522,7 @@ mcp: {
 
 // start
 const registry = ai.getToolRegistry()
-await ai.mcp.registerTools(registry)            // connects lazily; a failing server is skipped with a warning
+await ai.mcp.registerTools(registry)            // connects lazily; a server that fails to connect or list is skipped with a warning
 registry.setAgentPermissions('support', {
   mcp__fs__read: 'allow',
   mcp__fs__write: 'ask',                          // needs a confirmation (or resumable approvals)
@@ -529,20 +542,46 @@ await ai.generateText({ prompt, tools, toolPermissions })
   `[A-Za-z0-9_-]`, else `E_AI_CONFIG_ERROR`. A name over 64 characters, or one already registered, is not registered
   (warning) and is never cut. The 64-character limit and the character set are the providers' documented limits; the kit
   does not check them against the provider packages.
-- **Descriptions are untrusted.** A server's description is stripped of control characters, capped at 1024 characters and
-  prefixed with `[MCP:<server>]`. `servers.<key>.describe: { read: '…' }` replaces it with text you wrote. Server
-  `instructions` never reach the system prompt.
+- **Descriptions are untrusted.** A server's description is stripped of control characters and of invisible or format
+  characters (bidi, zero-width, variation selectors, tag characters, noncharacters; Unicode category `Cf`), capped at 1024
+  characters and prefixed with `[MCP:<server>]`. In the input schema, a `description` is cleaned and capped the same way
+  where it is a schema keyword (a property schema, `items`, `anyOf` and so on). It is not cleaned inside data keywords
+  (`default`, `enum`, `const`, `examples`, `x-…`). All other text in the schema (`title`, `enum`, `const`, `default`,
+  `examples`, `pattern`, `$comment`, property names and all other strings and keys, including a `description` inside data)
+  is only checked, for invisible characters: C0 and C1 control characters, tabs, line breaks and U+2028/U+2029 are kept
+  there, and the text is not length-capped. A tool is not registered (warning) when any of that text holds an invisible
+  character, and the `describe` option below replaces only the tool description, so such a tool cannot be used as it is.
+  It is also not registered when a value in its schema is inside more than 64 nested JSON levels (each object or array
+  is one level; a nested property takes two, so about 30 nested properties),
+  or when a `description` in a schema is not a string (a property may still be named `description`, and `default` or
+  `examples` may hold a `description` key). If one tool of a server fails to register for another reason, the tools
+  before it stay registered, its remaining tools are not registered, and the servers after it are not affected.
+  `servers.<key>.describe: { read: '…' }` replaces the tool description with text you wrote. Server `instructions` never reach
+  the system prompt.
 - **Pins.** `const digests = await ai.mcp.fingerprint('fs')` returns a digest per tool. Put them in `servers.fs.pins`: a tool
-  whose definition later changes (the "rug pull") is not registered, with a warning. `requirePins: true` also refuses tools without a pin.
+  whose definition later changes (the "rug pull") is not registered, with a warning. If the tool was registered before the
+  change, its registration is replaced by one with the same name that refuses every call (`PolicyViolationError`: the tool
+  changed since it was pinned), so the changed tool never runs and the model gets a clear refusal. It stays refused until
+  the server offers the pinned definition again or you review the change and update the pin (a new `McpTools` with the
+  new pin needs a new registry, since there is no way to unregister the refusing tool). `requirePins: true` also refuses
+  tools without a pin, when they are first registered.
 - **Not filtered.** Tool results are not checked. Prompt injection can come through results as well as descriptions. Use
   `ask` for tools with side effects.
 - **stdio is a command with your process's rights.** The child gets only a whitelist of the environment (for example `PATH`)
   plus `env` from the config. Run such servers in a container or as a separate user.
 - **Lifecycle.** Servers connect on the first `registerTools()`; a repeated call retries the servers that failed. `ai.shutdown()`
-  closes the clients. Registered tools stay in the registry (their calls then fail), so create a new registry after a close.
+  (or `ai.mcp.close()`) closes the clients; the registered tools stay in the registry and their calls then fail. A later
+  `registerTools()` connects again and registers the tools on the new connection in the same registry, so a new registry is
+  not needed. The same happens after a server stops answering `listTools`: that `registerTools()` closes it and warns, the
+  next one reconnects, and the old registrations are replaced by the new client's. A pinned tool whose definition changed
+  is refused at call time, on the same connection or after a reconnect (see Pins). If after a reconnect a new definition
+  is refused for another reason (a schema that cannot be cleaned), the earlier registration stays and the warning says
+  so; it is still bound to the closed connection, so its calls fail. A reconnect does not happen on its own, and there is
+  no way to unregister a tool: one the server no longer lists stays registered. One `McpTools` instance serves one
+  `ToolRegistry`: it remembers what it registered, so a second registry used with the same instance is not populated.
 - **Not in v1.** Resources, prompts, completions, elicitation, sampling, MCP Apps, OAuth (`authProvider`; use your own
-  transport later), reconnect or refresh on server notifications, and the kit as an MCP server. Without `@ai-sdk/mcp`,
-  `registerTools` throws `E_AI_MISSING_DEPENDENCY`.
+  transport later), automatic reconnect after a failed call, refresh on server notifications, unregistering tools, and the
+  kit as an MCP server. Without `@ai-sdk/mcp`, `registerTools` throws `E_AI_MISSING_DEPENDENCY`.
 
 ## Ace CLI Commands
 
