@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import fs, { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from '@japa/runner'
@@ -9,6 +9,84 @@ const quiet = () => {
   const logger = { info() {}, debug() {}, error() {}, warn: (m: string) => void warnings.push(m) }
   return { warnings, logger: logger as any }
 }
+
+/** Creating a symlink needs a privilege on Windows (developer mode or admin); the symlink test is skipped without it. */
+const canSymlink = (() => {
+  const dir = mkdtempSync(join(tmpdir(), 'adonis-ai-probe-'))
+  writeFileSync(join(dir, 'target.md'), 'x')
+  try {
+    symlinkSync(join(dir, 'target.md'), join(dir, 'link.md'))
+    return true
+  } catch {
+    return false
+  }
+})()
+
+test.group('AgentLoader skill symlinks', () => {
+  test('a skill file that links to a file outside the skills directory is not loaded', ({ assert }) => {
+    const outside = mkdtempSync(join(tmpdir(), 'adonis-ai-outside-'))
+    writeFileSync(join(outside, 'secret.md'), '---\ndescription: Outside\n---\nOUTSIDE-BODY\n')
+    const dir = mkdtempSync(join(tmpdir(), 'adonis-ai-skill-'))
+    symlinkSync(join(outside, 'secret.md'), join(dir, 'linked.md'))
+    const { warnings, logger } = quiet()
+
+    const entry = new AgentLoader({ logger }).loadSkillEntry('linked', dir)
+
+    assert.isNull(entry)
+    assert.isTrue(warnings.some((w) => w.includes('outside the skills directory')))
+  }).skip(!canSymlink, 'creating a symlink needs developer mode or admin on Windows')
+
+  test('a skill whose real path lies outside the skills directory is not loaded (realpath stubbed, no symlink needed)', ({ assert }) => {
+    const dir = mkdtempSync(join(tmpdir(), 'adonis-ai-skill-'))
+    writeFileSync(join(dir, 'linked.md'), '---\ndescription: Inside\n---\nINSIDE-BODY\n')
+    const outside = join(mkdtempSync(join(tmpdir(), 'adonis-ai-outside-')), 'secret.md')
+    const fsModule = fs as unknown as { realpathSync: (path: string) => string }
+    const realpathSync = fsModule.realpathSync
+    fsModule.realpathSync = (path: string) => (path.endsWith('linked.md') ? outside : realpathSync(path))
+    const { warnings, logger } = quiet()
+    try {
+      const entry = new AgentLoader({ logger }).loadSkillEntry('linked', dir)
+
+      assert.isNull(entry)
+      assert.isTrue(warnings.some((w) => w.includes('outside the skills directory')))
+    } finally {
+      fsModule.realpathSync = realpathSync
+    }
+  })
+
+  test('the file read is the resolved path that was checked (realpath stubbed, no symlink needed)', ({ assert }) => {
+    const dir = mkdtempSync(join(tmpdir(), 'adonis-ai-skill-'))
+    writeFileSync(join(dir, 'linked.md'), 'LINK-BODY\n')
+    writeFileSync(join(dir, 'real.md'), 'REAL-BODY\n')
+    const fsModule = fs as unknown as { realpathSync: (path: string) => string }
+    const realpathSync = fsModule.realpathSync
+    fsModule.realpathSync = (path: string) => (path.endsWith('linked.md') ? realpathSync(join(dir, 'real.md')) : realpathSync(path))
+    try {
+      assert.equal(new AgentLoader().loadSkill('linked', dir), 'REAL-BODY')
+    } finally {
+      fsModule.realpathSync = realpathSync
+    }
+  })
+
+  test('a skill path that cannot be resolved is reported with the error, and not loaded', ({ assert }) => {
+    const dir = mkdtempSync(join(tmpdir(), 'adonis-ai-skill-'))
+    writeFileSync(join(dir, 'locked.md'), '---\ndescription: Locked\n---\nBODY\n')
+    const fsModule = fs as unknown as { realpathSync: (path: string) => string }
+    const realpathSync = fsModule.realpathSync
+    fsModule.realpathSync = (path: string) => {
+      if (path.endsWith('locked.md')) throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' })
+      return realpathSync(path)
+    }
+    const { warnings, logger } = quiet()
+    try {
+      assert.isNull(new AgentLoader({ logger }).loadSkillEntry('locked', dir))
+      assert.isTrue(warnings.some((w) => w.includes('Failed to resolve skill') && w.includes('EACCES')))
+      assert.isFalse(warnings.some((w) => w.includes('outside the skills directory')))
+    } finally {
+      fsModule.realpathSync = realpathSync
+    }
+  })
+})
 
 test.group('AgentLoader.loadSkill', () => {
   test('a skill file is read and trimmed', ({ assert }) => {

@@ -8,6 +8,21 @@ import { LOAD_SKILL_TOOL } from './skill_tool.js'
 
 const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 
+/**
+ * The real path of `file` (symlinks followed) when it lies inside `dir` (also followed), else `null`. The caller reads
+ * the returned path, so the file it checked is the file it reads. A path that cannot be resolved throws.
+ */
+function realPathInside(dir: string, file: string): string | null {
+  const root = fs.realpathSync(dir)
+  const real = fs.realpathSync(file)
+  return real.startsWith(withSeparator(root)) ? real : null
+}
+
+/** The directory path with a trailing separator, so a prefix test does not match a sibling (`skills` vs `skills2`). */
+function withSeparator(dir: string): string {
+  return dir.endsWith(path.sep) ? dir : dir + path.sep
+}
+
 interface AppPaths {
   makePath(relative: string): string
 }
@@ -194,7 +209,7 @@ export class AgentLoader {
     if (!SAFE_NAME.test(name) || name.includes('..')) return null
     const root = path.resolve(dir)
     const resolved = path.resolve(root, `${name}.md`)
-    return resolved.startsWith(root + path.sep) ? resolved : null
+    return resolved.startsWith(withSeparator(root)) ? resolved : null
   }
 
   /** The body of a skill (no frontmatter); empty when the skill does not load. */
@@ -213,7 +228,18 @@ export class AgentLoader {
       this.logger?.warn?.(`[AgentLoader] Skill not found: ${skillName} at ${skillPath}`)
       return null
     }
-    return this.readSkillFile(skillName, skillPath)
+    let realPath: string | null
+    try {
+      realPath = realPathInside(skillsDir, skillPath)
+    } catch (err: unknown) {
+      this.logger?.warn?.(`[AgentLoader] Failed to resolve skill "${skillName}" at ${skillPath}: ${err instanceof Error ? err.message : String(err)}`)
+      return null
+    }
+    if (!realPath) {
+      this.logger?.warn?.(`[AgentLoader] Skill "${skillName}" resolves outside the skills directory (symlink?) and is not loaded: ${skillPath}`)
+      return null
+    }
+    return this.readSkillFile(skillName, realPath)
   }
 
   /** `null` when the file cannot be read or is over `MAX_SKILL_BYTES` (both are logged). */
