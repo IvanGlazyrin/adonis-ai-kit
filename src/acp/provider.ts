@@ -266,7 +266,8 @@ export class AcpDriver implements AiDriver {
   /** A prebuilt runtime is used as given; only its env is merged with the process env. */
   private prebuiltRuntime(runtime: AcpAgentRuntimeConfig): AcpAgentRuntimeConfig {
     requireAbsoluteCwd(this.name, runtime.cwd)
-    return { ...runtime, env: buildAgentEnv(this.env, runtime.env, this.config.inheritEnv) }
+    const extra = { ...runtime.env, ...(this.config.env ?? {}) }
+    return { ...runtime, env: buildAgentEnv(this.env, extra, this.config.inheritEnv) }
   }
 
   /** Built-in servers first, then configured ones; invalid entries are dropped with a warning. */

@@ -112,6 +112,16 @@ async function withStubbedAcp(run: (served: AcpDriver[]) => Promise<void>) {
 }
 
 test.group('LanguageModelFactory ACP options', () => {
+  test('acp.env is passed to every agent driver', async ({ assert }) => {
+    await withStubbedAcp(async (served) => {
+      const factory = new LanguageModelFactory({
+        acp: { inheritEnv: true, env: { HTTPS_PROXY: 'http://proxy.example:8080' } },
+      })
+      await factory.create(acpModel(process.cwd()) as any)
+      assert.deepEqual((served[0] as any).config.env, { HTTPS_PROXY: 'http://proxy.example:8080' })
+    })
+  })
+
   test('shares one driver per command and cwd by default and stops it on shutdown', async ({ assert }) => {
     await withStubbedAcp(async (served) => {
       const factory = new LanguageModelFactory()

@@ -133,3 +133,26 @@ test.group('ModelsDevSource remote fetch', () => {
     })
   })
 })
+
+test.group('ModelsDevSource transport', () => {
+  test('the models.dev download goes through the configured fetch, not the global one', async ({ assert }) => {
+    const dir = mkdtempSync(join(tmpdir(), 'adonis-ai-fetch-'))
+    const seen: string[] = []
+    const transport = (async (url: string | URL | Request) => {
+      seen.push(String(url))
+      return json(remoteBody, 200)
+    }) as typeof fetch
+
+    await withFetch([], async () => {
+      const source = new ModelsDevSource({
+        cachePath: join(dir, 'cache.json'),
+        systemProviders: { fallback: false, acp: false },
+        fetch: transport,
+      })
+      const cat = await source.refresh({ forceRemote: true })
+      assert.property(cat, 'remoteprov')
+    })
+
+    assert.deepEqual(seen, ['https://models.dev/api.json'])
+  })
+})

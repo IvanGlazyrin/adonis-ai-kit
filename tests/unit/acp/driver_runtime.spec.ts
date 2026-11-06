@@ -50,3 +50,37 @@ test.group('AcpDriver prebuilt runtime', () => {
     }
   })
 })
+
+test.group('AcpDriver prebuilt runtime environment', () => {
+  const runtime: AcpAgentRuntimeConfig = {
+    command: 'fake-agent',
+    args: [],
+    cwd: path.resolve('.'),
+    env: { SHARED: 'from-runtime', RUNTIME_ONLY: 'r' },
+    mcpServers: [],
+  }
+
+  test('config.env is merged over runtime.env, and both reach the agent without inheritEnv', ({ assert }) => {
+    const driver = new AcpDriver('acp', { driver: 'acp', env: { SHARED: 'from-config', HTTPS_PROXY: 'http://p' } } as any, {
+      env: { PATH: '/bin' },
+      runtime,
+    })
+    const resolved = (driver as any).resolveRuntimeConfig('claude-code') as AcpAgentRuntimeConfig
+    assert.equal(resolved.env.SHARED, 'from-config')
+    assert.equal(resolved.env.RUNTIME_ONLY, 'r')
+    assert.equal(resolved.env.HTTPS_PROXY, 'http://p')
+    assert.equal(resolved.env.PATH, '/bin')
+  })
+
+  test('with inheritEnv, config.env still wins and the server environment is not copied in', ({ assert }) => {
+    const driver = new AcpDriver(
+      'acp',
+      { driver: 'acp', inheritEnv: true, env: { SHARED: 'from-config' } } as any,
+      { env: { SECRET_FROM_SERVER: 'leak' }, runtime }
+    )
+    const resolved = (driver as any).resolveRuntimeConfig('claude-code') as AcpAgentRuntimeConfig
+    assert.equal(resolved.env.SHARED, 'from-config')
+    assert.equal(resolved.env.RUNTIME_ONLY, 'r')
+    assert.isUndefined(resolved.env.SECRET_FROM_SERVER)
+  })
+})

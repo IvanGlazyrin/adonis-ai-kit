@@ -3,6 +3,18 @@
 All notable changes to `adonis-ai-kit` are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- `LanguageModelFactory` option `fetch`: the transport for provider HTTP requests (for example an undici `fetch` with a proxy `dispatcher`). The timeout and request logging wrap it. Default: the global `fetch`.
+- `ModelsDevSource` option `fetch`: the transport for the models.dev download. Default: the global `fetch`.
+- `acp.env` option on `LanguageModelFactory`: extra environment variables for every ACP agent process (for example `HTTPS_PROXY`). They are merged on top of the allowlist, or on top of the full environment with `inheritEnv`.
+
+### Fixed
+
+- An `AcpDriver` created with a prebuilt `runtime` now merges its `config.env` into the agent environment (on top of `runtime.env`, the same order as without a prebuilt runtime). Before, `config.env` was ignored on that path. Code that sets `config.env` together with `runtime` will see those variables reach the agent. This is what makes `acp.env` work for agents started from `buildAcpRuntimeConfig`.
+
 ## [1.3.0] - 2026-11-02
 
 ### Changed

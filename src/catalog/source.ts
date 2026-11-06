@@ -164,6 +164,7 @@ export class ModelsDevSource {
   #inFlight: Promise<ModelsDevCatalog> | null = null
   #inFlightKey: string | null = null
   #logger?: Logger
+  #fetch?: typeof fetch
   #customCachePath?: string
   #customOverridePath?: string
   #ttlMs: number
@@ -188,8 +189,11 @@ export class ModelsDevSource {
      * `acp` agents (`acp-<id>`). Both default to `true`.
      */
     systemProviders?: { fallback?: boolean; acp?: boolean }
+    /** Transport for the models.dev download, e.g. a proxied fetch. Default: the global `fetch`. */
+    fetch?: typeof fetch
   }) {
     this.#logger = options?.logger
+    this.#fetch = options?.fetch
     this.#customCachePath = options?.cachePath
     this.#customOverridePath = options?.overridePath
     const injection = systemProviderInjection(options)
@@ -623,7 +627,8 @@ export class ModelsDevSource {
     etagPath: string,
     validators: CacheValidators
   ): Promise<ModelsDevCatalog> {
-    const response = await fetch(MODELS_DEV_URL, {
+    const send = this.#fetch ?? fetch
+    const response = await send(MODELS_DEV_URL, {
       signal: AbortSignal.timeout(6_000),
       headers: conditionalHeaders(validators),
     })

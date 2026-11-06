@@ -12,6 +12,11 @@ export interface LanguageModelFactoryOptions {
   factories?: ProviderFactoryRegistry
   /** Per-request fetch timeout. Default: 180_000 */
   timeoutMs?: number
+  /**
+   * Transport for provider HTTP requests, e.g. an undici `fetch` with a proxy dispatcher. The
+   * timeout and request logging wrap it. Default: the global `fetch`.
+   */
+  fetch?: typeof fetch
   logger?: Logger
   acp?: {
     permissionPolicy?: AcpPermissionPolicy
@@ -20,6 +25,8 @@ export interface LanguageModelFactoryOptions {
     inheritEnv?: boolean
     /** Reuse one driver (and agent process) per command and cwd. Default: true. */
     shareDriver?: boolean
+    /** Extra environment variables for every agent process, e.g. `HTTPS_PROXY`. Default: none. */
+    env?: Record<string, string>
   }
 }
 
@@ -60,6 +67,7 @@ function requestUrl(input: Parameters<typeof fetch>[0]): string {
 export class LanguageModelFactory {
   private readonly factories: ProviderFactoryRegistry
   private readonly timeoutMs: number
+  private readonly transport?: typeof fetch
   private readonly logger?: Logger
   private readonly acp: LanguageModelFactoryOptions['acp']
   private readonly drivers = new Map<string, AcpDriver>()
@@ -69,6 +77,7 @@ export class LanguageModelFactory {
   constructor(options: LanguageModelFactoryOptions = {}) {
     this.factories = options.factories ?? new ProviderFactoryRegistry()
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
+    this.transport = options.fetch
     this.logger = options.logger
     this.acp = options.acp
   }
@@ -141,6 +150,7 @@ export class LanguageModelFactory {
         agentId,
         permissionPolicy: this.acp?.permissionPolicy ?? 'ask',
         inheritEnv: this.acp?.inheritEnv ?? false,
+        env: this.acp?.env,
       },
       { logger: this.logger, confirmation: this.acp?.confirmation, runtime }
     )
@@ -257,14 +267,15 @@ export class LanguageModelFactory {
   }
 
   private createTimeoutFetch(): typeof fetch {
-    const { timeoutMs, logger } = this
+    const { timeoutMs, logger, transport } = this
     return async (input, init) => {
       const { url, method } = describeRequest(input, init)
       const startMs = Date.now()
 
       logger?.debug?.(`[LLM HTTP] ${method} ${url} | timeout=${timeoutMs}ms`)
       try {
-        const response = await fetch(input, { ...init, signal: requestSignal(timeoutMs, init?.signal) })
+        const send = transport ?? fetch
+        const response = await send(input, { ...init, signal: requestSignal(timeoutMs, init?.signal) })
         logger?.debug?.(`[LLM HTTP] ${response.status} ${method} ${url} | ${Date.now() - startMs}ms`)
         return response
       } catch (err) {

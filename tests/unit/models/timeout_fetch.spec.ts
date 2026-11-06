@@ -102,3 +102,23 @@ test.group('LanguageModelFactory request wrapper', () => {
     })
   })
 })
+
+test.group('LanguageModelFactory transport option', () => {
+  test('requests go through the configured transport instead of the global fetch', async ({ assert }) => {
+    const calls: string[] = []
+    const transport = (async (input: any) => {
+      calls.push(String(input))
+      return new Response('via transport', { status: 200 })
+    }) as typeof fetch
+    const factory = new LanguageModelFactory({ fetch: transport, timeoutMs: 60_000 }) as any
+
+    await withFetch(async () => {
+      throw new Error('global fetch must not be used')
+    }, async () => {
+      const res = await factory.createTimeoutFetch()('https://models.example/v1/chat', { body: '{}' })
+      assert.equal(await res.text(), 'via transport')
+    })
+
+    assert.deepEqual(calls, ['https://models.example/v1/chat'])
+  })
+})
