@@ -311,9 +311,11 @@ export class AcpDriver implements AiDriver {
       )
     }
 
+    const { command, args } = resolvePlatformCommand(runtimeConfig.command, runtimeConfig.args)
+
     const provider = acpModule.createACPProvider({
-      command: runtimeConfig.command,
-      args: runtimeConfig.args,
+      command,
+      args,
       env: runtimeConfig.env,
       authMethodId: runtimeConfig.authMethodId,
       session: {
@@ -438,4 +440,31 @@ function requireAbsoluteCwd(providerName: string, cwd: string): void {
   if (!path.isAbsolute(cwd)) {
     throw new ProviderConfigError(providerName, `ACP "cwd" must be an absolute path, got "${cwd}"`)
   }
+}
+
+/**
+ * Adapts command and args for cross-platform execution.
+ *
+ * On Unix (Linux, macOS): executed directly as binary or script with shebang.
+ * On Windows: Node's spawn() forbids batch files (.cmd/.bat) without a shell (CVE-2024-27980),
+ * and bare command names without .exe are not resolved by CreateProcessW (causing ENOENT).
+ * If the command is not explicitly a .exe or already cmd.exe, it is wrapped in `cmd.exe /c`.
+ */
+export function resolvePlatformCommand(
+  command: string,
+  args: string[] = [],
+  platform: NodeJS.Platform = process.platform
+): { command: string; args: string[] } {
+  if (platform === 'win32') {
+    const isExe = /\.exe$/i.test(command)
+    const isCmd = /(?:^|[\\/])cmd(?:\.exe)?$/i.test(command)
+    if (!isExe && !isCmd) {
+      const comspec = process.env.COMSPEC || 'cmd.exe'
+      return {
+        command: comspec,
+        args: ['/c', command, ...args],
+      }
+    }
+  }
+  return { command, args: [...args] }
 }
