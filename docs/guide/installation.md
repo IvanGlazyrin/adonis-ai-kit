@@ -8,7 +8,28 @@
 
 ---
 
-## Package Installation
+## Quick Setup
+
+```bash
+node ace add adonis-ai-kit
+```
+
+This installs the package and runs its configure hook, which:
+
+1. registers the service provider and the Ace commands in `adonisrc.ts`;
+2. adds `OPENAI_API_KEY` to `.env` and `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` validation to `start/env.ts`;
+3. creates `config/ai.ts` with an OpenAI provider and a commented-out Anthropic one. An existing `config/ai.ts` is never overwritten.
+
+To run the setup again for an already installed package, use `node ace configure adonis-ai-kit`. Install the provider packages you need (see below) and set the keys in `.env`.
+
+> [!NOTE]
+> Editing `adonisrc.ts` and `start/env.ts` needs `@adonisjs/assembler`, which a standard AdonisJS 7 app already has. Without it AdonisJS skips those steps with a warning: use the manual installation below.
+
+---
+
+## Manual Installation
+
+### Package Installation
 
 Install `adonis-ai-kit` via your preferred package manager:
 
@@ -28,7 +49,7 @@ yarn add adonis-ai-kit
 
 ---
 
-## Installing Provider Peer Dependencies
+### Installing Provider Peer Dependencies
 
 `adonis-ai-kit` relies on modular Vercel AI SDK provider adapters (optional peer dependencies). Install the providers your application needs. `models` chains can also load `@ai-sdk/azure`, `@ai-sdk/amazon-bedrock`, `@ai-sdk/mistral`, `@ai-sdk/cohere`, `@ai-sdk/xai`, `@openrouter/ai-sdk-provider` and others:
 
@@ -57,15 +78,19 @@ npm install @mcpc-tech/acp-ai-provider
 
 ---
 
-## Service Provider Registration
+### Service Provider and Commands Registration
 
-Register the AI service provider in your application's `adonisrc.ts` file:
+Register the AI service provider and the Ace commands in your application's `adonisrc.ts` file:
 
 ```ts
 // adonisrc.ts
 import { defineConfig } from '@adonisjs/core/app'
 
 export default defineConfig({
+  commands: [
+    // ...other commands
+    () => import('adonis-ai-kit/commands'),
+  ],
   providers: [
     // ...other providers
     () => import('adonis-ai-kit/providers/ai_provider'),
@@ -73,7 +98,9 @@ export default defineConfig({
 })
 ```
 
-### What the Provider Does
+The `commands` entry adds `ai:test` and `make:ai-agent` to Ace (see [CLI](./cli.md)).
+
+#### What the Provider Does
 
 1. **IoC Container Singleton:** Binds the `ai` service (`AiManager`) to the AdonisJS container under the `'ai'` key.
 2. **HTTP Response Macro:** Installs the `response.streamAI()` macro on the HTTP response object for seamless Server-Sent Events (SSE) streaming.

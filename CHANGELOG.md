@@ -7,6 +7,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `node ace add adonis-ai-kit` and `node ace configure adonis-ai-kit`: a `configure` hook (exported from the package entry) registers the provider and the Ace commands in `adonisrc.ts`, defines `OPENAI_API_KEY` in `.env` and `ANTHROPIC_API_KEY` validation in `start/env.ts`, and creates `config/ai.ts` from a stub. An existing `config/ai.ts` is kept.
 - `LanguageModelFactory` option `fetch`: the transport for provider HTTP requests (for example an undici `fetch` with a proxy `dispatcher`). The timeout and request logging wrap it. Default: the global `fetch`.
 - `ModelsDevSource` option `fetch`: the transport for the models.dev download. Default: the global `fetch`.
 - `acp.env` option on `LanguageModelFactory`: extra environment variables for every ACP agent process (for example `HTTPS_PROXY`). They are merged on top of the allowlist, or on top of the full environment with `inheritEnv`.

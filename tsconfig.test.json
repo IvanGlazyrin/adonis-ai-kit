@@ -8,6 +8,8 @@
     "providers/**/*",
     "services/**/*",
     "commands/**/*",
+    "configure.ts",
+    "stubs/**/*",
     "tests/**/*.ts",
     "bin/**/*.ts"
   ],

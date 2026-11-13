@@ -63,22 +63,34 @@ flowchart TD
 ## Installation
 
 ```bash
+node ace add adonis-ai-kit
+```
+
+This installs the package and runs its configure hook. The hook registers the provider and the Ace commands in `adonisrc.ts`, adds `OPENAI_API_KEY` to `.env` and validates `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` in `start/env.ts`, and creates `config/ai.ts` (an existing `config/ai.ts` is kept). Run `node ace configure adonis-ai-kit` to repeat the setup for an already installed package.
+
+> Package name on npm is `adonis-ai-kit` (the `adonis-ai` name on npm is taken by another project).
+> The source repository is [github.com/IvanGlazyrin/adonis-ai-kit](https://github.com/IvanGlazyrin/adonis-ai-kit).
+
+### Manual installation
+
+```bash
 npm install adonis-ai-kit
 # or
 pnpm add adonis-ai-kit
 ```
 
-> Package name on npm is `adonis-ai-kit` (the `adonis-ai` name on npm is taken by another project).
-> The source repository is [github.com/IvanGlazyrin/adonis-ai-kit](https://github.com/IvanGlazyrin/adonis-ai-kit).
-
-Add the provider to `adonisrc.ts`:
+Add the provider and the Ace commands to `adonisrc.ts`:
 
 ```ts
 export default defineConfig({
+  commands: [
+    // ...
+    () => import('adonis-ai-kit/commands'),
+  ],
   providers: [
     // ...
-    () => import('adonis-ai-kit/providers/ai_provider')
-  ]
+    () => import('adonis-ai-kit/providers/ai_provider'),
+  ],
 })
 ```
 

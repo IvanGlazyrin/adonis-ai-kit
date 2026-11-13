@@ -20,7 +20,9 @@
     "src/**/*",
     "providers/**/*",
     "services/**/*",
-    "commands/**/*"
+    "commands/**/*",
+    "configure.ts",
+    "stubs/**/*"
   ],
   "exclude": [
     "dist",

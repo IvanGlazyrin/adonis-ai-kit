@@ -17,3 +17,4 @@ export * from './approvals/index.js'
 
 // Explicitly resolve re-export ambiguities from star exports
 export type { ToolPermission } from './guard/index.js'
+export { configure } from '../configure.js'

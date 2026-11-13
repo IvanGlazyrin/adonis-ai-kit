@@ -2,6 +2,8 @@
 
 `adonis-ai-kit` provides first-party commands for the AdonisJS **Ace CLI**.
 
+The commands must be registered in `adonisrc.ts` (`commands: [() => import('adonis-ai-kit/commands')]`). `node ace add adonis-ai-kit` does it for you; see [Installation](./installation.md) for the manual setup.
+
 ---
 
 ## `ai:test` {#ai-test}
