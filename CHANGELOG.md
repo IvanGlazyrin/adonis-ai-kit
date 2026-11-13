@@ -11,6 +11,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `ModelsDevSource` option `fetch`: the transport for the models.dev download. Default: the global `fetch`.
 - `acp.env` option on `LanguageModelFactory`: extra environment variables for every ACP agent process (for example `HTTPS_PROXY`). They are merged on top of the allowlist, or on top of the full environment with `inheritEnv`.
 
+### Changed
+
+- Node.js 24 is now the minimum (`engines.node >=24.0.0`), matching `@adonisjs/core` 7. CI runs on Node 24 and 26, on Ubuntu and Windows.
+
 ### Fixed
 
 - An `AcpDriver` created with a prebuilt `runtime` now merges its `config.env` into the agent environment (on top of `runtime.env`, the same order as without a prebuilt runtime). Before, `config.env` was ignored on that path. Code that sets `config.env` together with `runtime` will see those variables reach the agent. This is what makes `acp.env` work for agents started from `buildAcpRuntimeConfig`.

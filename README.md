@@ -7,7 +7,7 @@
 [![AdonisJS](https://img.shields.io/badge/AdonisJS-7.x-5A45FF.svg)](https://adonisjs.com)
 [![TypeScript](https://img.shields.io/badge/TypeScript-ES2022%20%2F%20NodeNext-blue.svg)](https://www.typescriptlang.org)
 [![Vercel AI SDK](https://img.shields.io/badge/Vercel%20AI%20SDK-v7.x-black.svg)](https://sdk.vercel.ai)
-[![Node](https://img.shields.io/badge/node-%3E%3D22.0.0-brightgreen.svg)](https://nodejs.org)
+[![Node](https://img.shields.io/badge/node-%3E%3D24.0.0-brightgreen.svg)](https://nodejs.org)
 
 ---
 

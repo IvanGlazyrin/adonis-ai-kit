@@ -2,16 +2,17 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, dev ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, dev ]
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        node-version: [22.x, 24.x]
+        os: [ubuntu-latest, windows-latest]
+        node-version: [24.x, 26.x]
 
     steps:
     - uses: actions/checkout@v4

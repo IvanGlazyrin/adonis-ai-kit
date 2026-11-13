@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- Node.js `>= 22.0.0`
+- Node.js `>= 24.0.0`
 - AdonisJS `>= 7.0.0`
 - TypeScript `>= 5.0.0`
 
