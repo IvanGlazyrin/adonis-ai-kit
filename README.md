@@ -375,7 +375,8 @@ result.model    // its modelID
 ```
 
 - Entries are tried in order. Retryable failures (429, 5xx, network) and entries that cannot be attempted (missing provider
-  package, config error, open breaker) move on to the next entry; bad requests, caller aborts, any failure after a
+  package, config error, open breaker) move on to the next entry; so do 401, 403 and 402, which are about the entry's key (set
+  `fallbackOnCredentialErrors: false` on the call or in the config to throw them); bad requests, caller aborts, any failure after a
   tool has run are thrown as is, and a retryable failure of an ACP agent is thrown as `AcpCallFailedError`. `streamText` falls back on errors before the first chunk.
 - Each entry has its own circuit breaker, keyed by `credentialKey` when present (so one bad key doesn't block the others).
 - String entries are resolved through `config.resolver` (e.g. a `CatalogModelResolver`); without one a `ProviderConfigError` is thrown.

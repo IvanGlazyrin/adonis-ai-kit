@@ -1,5 +1,6 @@
 import { test } from '@japa/runner'
 import {
+  CREDENTIAL_ERROR_CLASSES,
   classifyError,
   classifyErrorClass,
   countsAsBreakerFailure,
@@ -31,6 +32,7 @@ test.group('classifyError', () => {
     ['provider marked retryable', e({ isRetryable: true }, 'weird'), 'retryable', 'unknown', false],
     ['401', e({ statusCode: 401 }), 'fatal', 'auth_error', false],
     ['403', e({ statusCode: 403 }), 'fatal', 'auth_error', false],
+    ['402', e({ statusCode: 402 }), 'fatal', 'billing_error', false],
     ['404', e({ statusCode: 404 }), 'fatal', 'model_not_found', false],
     ['400 bad request', e({ statusCode: 400 }, 'invalid param'), 'fatal', 'invalid_request', false],
     ['plain object 400', { statusCode: 400 }, 'fatal', 'invalid_request', false],
@@ -111,6 +113,7 @@ test.group('error classes', () => {
       'overloaded',
       'timeout',
       'auth_error',
+      'billing_error',
       'model_not_found',
       'prompt_too_long',
       'invalid_request',
@@ -124,13 +127,18 @@ test.group('error classes', () => {
       assert.isString(msg)
       assert.isTrue(msg.length > 0)
     }
+    assert.equal(getUserFriendlyMessage('billing_error'), 'API billing problem — check account balance')
+  })
+
+  test('CREDENTIAL_ERROR_CLASSES holds auth_error and billing_error', ({ assert }) => {
+    assert.sameMembers([...CREDENTIAL_ERROR_CLASSES], ['auth_error', 'billing_error'])
   })
 
   test('identifies retryable error classes for fallback routing', ({ assert }) => {
     for (const cls of ['rate_limit', 'overloaded', 'timeout', 'server_error', 'network_error', 'prompt_too_long', 'no_output_generated'] as const) {
       assert.isTrue(isRetryableError(cls), cls)
     }
-    for (const cls of ['auth_error', 'model_not_found', 'invalid_request', 'unknown'] as const) {
+    for (const cls of ['auth_error', 'billing_error', 'model_not_found', 'invalid_request', 'unknown'] as const) {
       assert.isFalse(isRetryableError(cls), cls)
     }
   })
@@ -139,7 +147,7 @@ test.group('error classes', () => {
     for (const cls of ['rate_limit', 'overloaded', 'timeout', 'server_error', 'network_error'] as const) {
       assert.isTrue(countsAsBreakerFailure(cls), cls)
     }
-    for (const cls of ['prompt_too_long', 'no_output_generated', 'auth_error', 'model_not_found', 'invalid_request', 'unknown'] as const) {
+    for (const cls of ['prompt_too_long', 'no_output_generated', 'auth_error', 'billing_error', 'model_not_found', 'invalid_request', 'unknown'] as const) {
       assert.isFalse(countsAsBreakerFailure(cls), cls)
     }
   })

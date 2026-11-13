@@ -88,14 +88,20 @@ export interface ModelChainOptions {
   /** Exceptions thrown or rejected by the handler are swallowed (logged as a warning); it is not awaited. */
   onFallback?: (event: FallbackEvent) => unknown
   logger?: Logger
+  /**
+   * Error classes that move on to the next candidate although the classifier calls them `fatal`, for example
+   * `CREDENTIAL_ERROR_CLASSES`. The breaker does not count them. Without it, only retryable failures move on.
+   */
+  alsoFallBackOn?: ReadonlySet<ErrorClass>
 }
 
 /**
  * Runs `attempt` against each candidate in order until one succeeds. Each candidate is guarded by a
  * per-credential circuit breaker; a retryable failure, or a candidate that cannot be attempted (missing provider
- * package, config error, open breaker), moves on to the next candidate; anything else, any failure after tools ran
- * and any caller abort is thrown. A retryable failure of an ACP agent is thrown too: the agent may have run
- * side effects inside its own call (fail-closed). An exhausted chain rethrows the last error.
+ * package, config error, open breaker), moves on to the next candidate, and so does a class listed in
+ * `alsoFallBackOn`; anything else, any failure after tools ran and any caller abort is thrown. A retryable failure
+ * of an ACP agent is thrown too: the agent may have run side effects inside its own call (fail-closed).
+ * An exhausted chain rethrows the last error.
  */
 export async function runModelChain<T>(
   candidates: ChainCandidate[],
@@ -144,6 +150,7 @@ export async function runModelChain<T>(
           model,
           classification,
           toolsExecuted,
+          alsoFallBackOn: options.alsoFallBackOn,
           next: nextAvailable(candidates, i + 1, breaker),
           error,
           logger,
@@ -186,20 +193,25 @@ function acquireCandidate(
 
 /**
  * The candidate to fall back to. Throws, after logging why, when the failure may not fall back: a non-retryable
- * failure, a failure after tools ran, or no candidate left. The attempt's own error is thrown, except for a retryable
- * failure of an ACP agent (its call may have run side effects): that one is an `AcpCallFailedError`.
+ * failure that `alsoFallBackOn` does not list, a failure after tools ran, or no candidate left. The attempt's own
+ * error is thrown, except for a retryable failure of an ACP agent (its call may have run side effects): that one
+ * is an `AcpCallFailedError`.
  */
 function fallbackTarget(input: {
   candidate: ChainCandidate
   model: ResolvedModel
   classification: ErrorClassification
   toolsExecuted: boolean
+  alsoFallBackOn: ReadonlySet<ErrorClass> | undefined
   next: ChainCandidate | null
   error: unknown
   logger: Logger | undefined
 }): ChainCandidate {
-  const { candidate, model, classification, toolsExecuted, next, error, logger } = input
-  const canFallBack = classification.kind === 'retryable' || classification.kind === 'skip'
+  const { candidate, model, classification, toolsExecuted, alsoFallBackOn, next, error, logger } = input
+  const canFallBack =
+    classification.kind === 'retryable' ||
+    classification.kind === 'skip' ||
+    (classification.kind === 'fatal' && alsoFallBackOn?.has(classification.errorClass) === true)
   const acpCallFailed = classification.kind === 'retryable' && model.npm === ACP_NPM
   if (canFallBack && !toolsExecuted && !acpCallFailed && next) return next
 

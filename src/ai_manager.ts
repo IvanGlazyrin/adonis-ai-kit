@@ -40,7 +40,7 @@ import {
   CascadingFallbackError,
   ProviderConfigError,
 } from './errors.js'
-import { classifyError } from './error_classifier.js'
+import { CREDENTIAL_ERROR_CLASSES, classifyError } from './error_classifier.js'
 import { normalizeUsage, sumUsage } from './usage.js'
 import { ModelsDevSource, resolveCatalogProviderId } from './catalog/source.js'
 import type { ModelCatalogEntry } from './catalog/models_dev.js'
@@ -913,7 +913,8 @@ export class AiManager {
 
   /**
    * Executes an operation over an explicit chain of models. The provider cascade is not used; the
-   * chain is authoritative and every entry has its own per-credential circuit breaker.
+   * chain is authoritative and every entry has its own per-credential circuit breaker. A 401, 403 or 402 moves
+   * on to the next entry unless `fallbackOnCredentialErrors` is false.
    */
   private async executeOverChain<T>(
     request: ChainRequest,
@@ -955,9 +956,15 @@ export class AiManager {
         abortSignal: request.abortSignal,
         onFallback: request.onFallback,
         logger: this.logger,
+        alsoFallBackOn: this.fallsBackOnCredentialErrors(request) ? CREDENTIAL_ERROR_CLASSES : undefined,
       }
     )
     return { result, provider: model.providerID, model: model.modelID }
+  }
+
+  /** The call's `fallbackOnCredentialErrors`, then the config's, then true. */
+  private fallsBackOnCredentialErrors(request: ChainRequest): boolean {
+    return request.fallbackOnCredentialErrors ?? this.config.fallbackOnCredentialErrors ?? true
   }
 
   /**

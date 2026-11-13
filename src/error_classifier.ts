@@ -93,6 +93,7 @@ export type ErrorClass =
   | 'overloaded' // 529, 409, 425
   | 'timeout' // 408
   | 'auth_error' // 401, 403
+  | 'billing_error' // 402
   | 'model_not_found' // 404
   | 'prompt_too_long' // 400 + specific message
   | 'invalid_request' // 400 other
@@ -109,6 +110,7 @@ const CLASS_BY_EXACT_STATUS: Record<number, ErrorClass> = {
   425: 'overloaded',
   408: 'timeout',
   401: 'auth_error',
+  402: 'billing_error',
   403: 'auth_error',
   404: 'model_not_found',
 }
@@ -193,6 +195,12 @@ const RETRYABLE_ERROR_CLASSES: ReadonlySet<ErrorClass> = new Set([
 export function isRetryableError(errorClass: ErrorClass): boolean {
   return RETRYABLE_ERROR_CLASSES.has(errorClass)
 }
+
+/**
+ * Failures of the credential itself (revoked key, no balance). They stay `fatal` for the classifier; a model chain
+ * can still move on to its next entry, which may carry another key (see `ModelChainOptions.alsoFallBackOn`).
+ */
+export const CREDENTIAL_ERROR_CLASSES: ReadonlySet<ErrorClass> = new Set(['auth_error', 'billing_error'])
 
 const BREAKER_ERROR_CLASSES: ReadonlySet<ErrorClass> = new Set([
   'rate_limit',
@@ -279,6 +287,7 @@ const FRIENDLY_MESSAGES: Record<ErrorClass, string> = {
   overloaded: 'API provider overloaded',
   timeout: 'API request timed out',
   auth_error: 'API authentication failed — check API key',
+  billing_error: 'API billing problem — check account balance',
   model_not_found: 'Model not found — check LLM_MODEL config',
   prompt_too_long: 'Context too large for model — consider compaction',
   invalid_request: 'Invalid API request',

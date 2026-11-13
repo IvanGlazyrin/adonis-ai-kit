@@ -12,8 +12,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `ModelsDevSource` option `fetch`: the transport for the models.dev download. Default: the global `fetch`.
 - `acp.env` option on `LanguageModelFactory`: extra environment variables for every ACP agent process (for example `HTTPS_PROXY`). They are merged on top of the allowlist, or on top of the full environment with `inheritEnv`.
 
+- `billing_error` error class: HTTP `402` is now classified as `billing_error` (was `unknown`), with the message "API billing problem — check account balance". It stays `fatal`, as `auth_error` does.
+- `ModelChainOptions.alsoFallBackOn`: error classes that move `runModelChain` on to the next entry although they are `fatal`. They do not count against the circuit breaker. Without it, `runModelChain` behaves as before.
+- `CREDENTIAL_ERROR_CLASSES` (`auth_error`, `billing_error`), exported from `adonis-ai-kit` and `adonis-ai-kit/models`.
+- `fallbackOnCredentialErrors` option on model-chain calls and in `AiConfig` (default `true`).
+
 ### Changed
 
+- Model chains (`models: [...]`) now move on to the next entry after a `401`, `403` or `402`, so a revoked user key falls back to the team key. Before, these were thrown at once. The entry's circuit breaker is not affected. Nothing moves on after a tool has run, a failure on the last entry is thrown as is, and the provider cascade is unchanged. To restore the earlier behaviour, set `fallbackOnCredentialErrors: false` on the call, or in the config for every call.
 - Node.js 24 is now the minimum (`engines.node >=24.0.0`), matching `@adonisjs/core` 7. CI runs on Node 24 and 26, on Ubuntu and Windows.
 
 ### Fixed

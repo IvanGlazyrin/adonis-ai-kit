@@ -23,6 +23,27 @@ const rateLimit = () =>
     isRetryable: true,
   })
 
+const unauthorized = () =>
+  new APICallError({
+    message: 'unauthorized',
+    url: 'http://x',
+    requestBodyValues: {},
+    statusCode: 401,
+    isRetryable: false,
+  })
+
+const unauthorizedModel = (id: string) =>
+  new MockLanguageModelV4({
+    provider: 'mock',
+    modelId: id,
+    doGenerate: async () => {
+      throw unauthorized()
+    },
+    doStream: async () => {
+      throw unauthorized()
+    },
+  })
+
 const textModel = (id: string, text: string) =>
   new MockLanguageModelV4({
     provider: 'mock',
@@ -95,6 +116,107 @@ test.group('AiManager model chain', () => {
     assert.equal(result.model, 'b')
     assert.lengthOf(events, 1)
     assert.equal(events[0].errorClass, 'rate_limit')
+  })
+
+  test('generateText moves from a 401 entry to the next one by default', async ({ assert }) => {
+    const m = manager({ a: unauthorizedModel('a'), b: textModel('b', 'from b') })
+    const events: Array<{ errorClass: string }> = []
+    const result = await m.generateText({
+      prompt: 'x',
+      maxRetries: 0,
+      models: [resolved('a', 'key:1'), resolved('b', 'key:2')],
+      onFallback: (e) => events.push(e),
+    })
+    assert.equal(result.text, 'from b')
+    assert.equal(result.model, 'b')
+    assert.equal(events[0].errorClass, 'auth_error')
+  })
+
+  test('fallbackOnCredentialErrors: false on the call throws the 401', async ({ assert }) => {
+    const b = textModel('b', 'never')
+    const m = manager({ a: unauthorizedModel('a'), b })
+    await assert.rejects(
+      () =>
+        m.generateText({
+          prompt: 'x',
+          maxRetries: 0,
+          fallbackOnCredentialErrors: false,
+          models: [resolved('a', 'key:1'), resolved('b', 'key:2')],
+        }),
+      /unauthorized/
+    )
+    assert.equal(b.doGenerateCalls.length, 0)
+  })
+
+  test('fallbackOnCredentialErrors: false in config throws the 401', async ({ assert }) => {
+    const b = textModel('b', 'never')
+    const m = manager({ a: unauthorizedModel('a'), b }, { fallbackOnCredentialErrors: false })
+    await assert.rejects(
+      () =>
+        m.generateText({
+          prompt: 'x',
+          maxRetries: 0,
+          models: [resolved('a', 'key:1'), resolved('b', 'key:2')],
+        }),
+      /unauthorized/
+    )
+    assert.equal(b.doGenerateCalls.length, 0)
+  })
+
+  test('the call option wins over the config', async ({ assert }) => {
+    const m = manager({ a: unauthorizedModel('a'), b: textModel('b', 'from b') }, { fallbackOnCredentialErrors: false })
+    const result = await m.generateText({
+      prompt: 'x',
+      maxRetries: 0,
+      fallbackOnCredentialErrors: true,
+      models: [resolved('a', 'key:1'), resolved('b', 'key:2')],
+    })
+    assert.equal(result.model, 'b')
+  })
+
+  test('a 401 on the last entry is thrown', async ({ assert }) => {
+    const m = manager({ a: unauthorizedModel('a'), b: unauthorizedModel('b') })
+    await assert.rejects(
+      () =>
+        m.generateText({
+          prompt: 'x',
+          maxRetries: 0,
+          models: [resolved('a', 'key:1'), resolved('b', 'key:2')],
+        }),
+      /unauthorized/
+    )
+  })
+
+  test('no fallback on a 401 after a tool ran', async ({ assert }) => {
+    let step = 0
+    const flaky = new MockLanguageModelV4({
+      provider: 'mock',
+      modelId: 'a',
+      doGenerate: async () => {
+        step++
+        if (step === 1) {
+          return {
+            content: [{ type: 'tool-call', toolCallId: 'c1', toolName: 'ping', input: '{}' }],
+            finishReason: finish('tool-calls'),
+            usage: usage(1, 1),
+            warnings: [],
+          }
+        }
+        throw unauthorized()
+      },
+    })
+    const b = textModel('b', 'never')
+    const m = manager({ a: flaky, b })
+    await assert.rejects(() =>
+      m.generateText({
+        prompt: 'x',
+        maxRetries: 0,
+        maxSteps: 5,
+        tools: { ping },
+        models: [resolved('a', 'key:1'), resolved('b', 'key:2')],
+      })
+    )
+    assert.equal(b.doGenerateCalls.length, 0)
   })
 
   test('a string entry without a resolver throws ProviderConfigError', async ({ assert }) => {

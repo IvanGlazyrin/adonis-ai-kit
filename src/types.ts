@@ -210,6 +210,11 @@ export interface AiConfig {
   languageModels?: LanguageModelSource
   /** Conversation history (see `adonis-ai-kit/conversations`). Without `store`, an in-memory store is used. */
   conversations?: { store?: ConversationStore }
+  /**
+   * Default for `ModelChainCallOptions.fallbackOnCredentialErrors`: whether a model chain moves on to the next
+   * entry after a 401, 403 or 402. Default: true.
+   */
+  fallbackOnCredentialErrors?: boolean
   /** MCP servers whose tools are registered in the ToolRegistry (see `adonis-ai-kit/mcp`). Denied until permitted. */
   mcp?: McpConfig
   /** Human approval of `ask` tools (see `adonis-ai-kit/approvals`). Default mode: `blocking`. */
@@ -237,6 +242,12 @@ export interface ModelChainCallOptions {
    * is not used: each entry is tried in order with its own per-credential circuit breaker.
    */
   models?: Array<ResolvedModel | string>
+  /**
+   * Whether a failure of the entry's credential (401, 403, 402) moves on to the next entry of `models`, which may
+   * carry another key. Default: `AiConfig.fallbackOnCredentialErrors`, then true. A 401 on the last entry, or after
+   * a tool ran, is thrown either way. The provider cascade is not affected.
+   */
+  fallbackOnCredentialErrors?: boolean
   /** Called when a model failed with a retryable error, or could not be attempted (missing provider package, config error, open breaker), and the next entry is about to be tried. */
   onFallback?: (event: FallbackEvent) => unknown
 }

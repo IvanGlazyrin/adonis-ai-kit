@@ -47,6 +47,26 @@ circuitBreaker: {
 
 ---
 
+## Credential errors in model chains {#credential-errors-in-model-chains}
+
+A `models` chain can carry one key per entry, for example the user's own key first and the team key after it. A `401` / `403` (`auth_error`) or `402` (`billing_error`) from an entry says that this credential is bad, not that the request is, so the chain moves on to the next entry. This is the default.
+
+```ts
+await ai.generateText({
+  prompt: 'Hello',
+  models: [userKeyModel, teamKeyModel],
+  onFallback: ({ fromModel, toModel, errorClass }) => log.warn(`${fromModel} -> ${toModel} (${errorClass})`), // errorClass: 'auth_error'
+})
+```
+
+- A credential failure does not count against the circuit breaker of that entry; it stays `closed`.
+- The same limits apply as for any fallback: nothing moves on after a tool has run, and a `401` on the last entry is thrown as it is.
+- The provider cascade (no `models`) is not affected: there a `401` is still thrown.
+- To restore the earlier behaviour, where these errors are thrown, set `fallbackOnCredentialErrors: false` on the call, or in the config for every call. The call's value wins over the config's.
+- With `runModelChain` directly, pass `alsoFallBackOn: CREDENTIAL_ERROR_CLASSES` (exported from `adonis-ai-kit` and `adonis-ai-kit/models`). Without it, only retryable failures move on. Any set of error classes can be given.
+
+---
+
 ## Fail-Closed Side-Effect Protection
 
 > [!IMPORTANT]
@@ -66,7 +86,7 @@ A failure after a tool has executed throws the attempt's own error. This prevent
 Exceptions are classified into actionable error categories (`classifyError`, `isRetryableError`):
 
 - **Retryable / Failover Eligible:** `429` rate limit, `409` / `425` / `529` overloaded, `408` timeout, `5xx` server errors, network errors, and "no output generated".
-- **Fail-Fast (No Failover):** `400` invalid request, `401` / `403` auth errors, `404` model not found, and caller aborts (`abortSignal`, `stream.abort()`).
+- **Fail-Fast (No Failover):** `400` invalid request, `401` / `403` auth errors (`auth_error`), `402` billing problems (`billing_error`), `404` model not found, and caller aborts (`abortSignal`, `stream.abort()`). In a `models` chain, `401` / `403` / `402` do move on, see [Credential errors in model chains](#credential-errors-in-model-chains).
 - **Context Window Exceeded (`prompt_too_long`):** Falls back to the next model without counting against the circuit breaker.
 
 When every candidate fails with a retryable error, or its breaker is open, the call throws `CascadingFallbackError` (`E_AI_FALLBACK_FAILED`). Its `attempts` array lists each provider, model and error. A non-retryable error is thrown as it is, without trying the next candidate.

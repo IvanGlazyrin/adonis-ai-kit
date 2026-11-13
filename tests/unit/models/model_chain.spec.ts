@@ -1,6 +1,13 @@
 import { test } from '@japa/runner'
 import { CircuitBreaker } from '../../../src/circuit_breaker.js'
-import { AiException, ProviderConfigError, ProviderUnavailableError } from '../../../src/errors.js'
+import { CREDENTIAL_ERROR_CLASSES } from '../../../src/error_classifier.js'
+import {
+  AcpCallFailedError,
+  AiException,
+  ProviderConfigError,
+  ProviderUnavailableError,
+} from '../../../src/errors.js'
+import { ACP_NPM } from '../../../src/models/protocols.js'
 import {
   buildChainCandidates,
   runModelChain,
@@ -243,6 +250,113 @@ test.group('runModelChain', () => {
     assert.lengthOf(calls, 1)
     assert.lengthOf(events, 0)
     assert.equal(breaker.getState(SONNET), 'closed')
+  })
+
+  test('401 on the first entry moves to the next when alsoFallBackOn has auth_error', async ({ assert }) => {
+    const breaker = new CircuitBreaker({ failureThreshold: 1 })
+    const events: FallbackEvent[] = []
+    const { calls, attempt } = harness({ 'a/m': failWith('Unauthorized', 401) })
+
+    const out = await runModelChain(buildChainCandidates({ chain: [A, B] }), attempt, {
+      breaker,
+      alsoFallBackOn: CREDENTIAL_ERROR_CLASSES,
+      onFallback: (e) => events.push(e),
+    })
+
+    assert.deepEqual(
+      calls.map((c) => c.key),
+      ['a/m', 'b/m']
+    )
+    assert.equal(out.key, 'b/m')
+    assert.lengthOf(events, 1)
+    assert.equal(events[0].errorClass, 'auth_error')
+    assert.equal(events[0].fromModel, 'a/m')
+    assert.equal(events[0].toModel, 'b/m')
+    assert.equal(breaker.getState('a/m'), 'closed')
+    assert.equal(breaker.getStats('a/m').failures, 0)
+  })
+
+  test('402 and 403 move on as well with CREDENTIAL_ERROR_CLASSES', async ({ assert }) => {
+    for (const status of [402, 403]) {
+      const { calls, attempt } = harness({ 'a/m': failWith('denied', status) })
+      const out = await runModelChain(buildChainCandidates({ chain: [A, B] }), attempt, {
+        alsoFallBackOn: CREDENTIAL_ERROR_CLASSES,
+      })
+      assert.equal(out.key, 'b/m', String(status))
+      assert.lengthOf(calls, 2)
+    }
+  })
+
+  test('alsoFallBackOn does not widen fallback to other fatal classes', async ({ assert }) => {
+    const { calls, attempt } = harness({ 'a/m': failWith('bad request', 400) })
+    await assert.rejects(
+      () =>
+        runModelChain(buildChainCandidates({ chain: [A, B] }), attempt, {
+          alsoFallBackOn: CREDENTIAL_ERROR_CLASSES,
+        }),
+      /bad request/
+    )
+    assert.lengthOf(calls, 1)
+  })
+
+  test('401 after a tool ran is thrown even with alsoFallBackOn', async ({ assert }) => {
+    const breaker = new CircuitBreaker({ failureThreshold: 1 })
+    const events: FallbackEvent[] = []
+    let calls = 0
+    await assert.rejects(
+      () =>
+        runModelChain(
+          buildChainCandidates({ chain: [A, B] }),
+          async (a) => {
+            calls += 1
+            a.markToolsExecuted()
+            throw new FakeHttpError('Unauthorized after tools', 401)
+          },
+          { breaker, alsoFallBackOn: CREDENTIAL_ERROR_CLASSES, onFallback: (e) => events.push(e) }
+        ),
+      /Unauthorized after tools/
+    )
+    assert.equal(calls, 1)
+    assert.lengthOf(events, 0)
+  })
+
+  test('401 on the last entry is thrown as is', async ({ assert }) => {
+    const breaker = new CircuitBreaker({ failureThreshold: 1 })
+    const { calls, attempt } = harness({
+      'a/m': failWith('Unauthorized a', 401),
+      'b/m': failWith('Unauthorized b', 401),
+    })
+    await assert.rejects(
+      () =>
+        runModelChain(buildChainCandidates({ chain: [A, B] }), attempt, {
+          breaker,
+          alsoFallBackOn: CREDENTIAL_ERROR_CLASSES,
+        }),
+      /Unauthorized b/
+    )
+    assert.lengthOf(calls, 2)
+    assert.equal(breaker.getState('a/m'), 'closed')
+    assert.equal(breaker.getState('b/m'), 'closed')
+  })
+
+  test('a retryable failure of an ACP agent still throws AcpCallFailedError with alsoFallBackOn', async ({
+    assert,
+  }) => {
+    const acp: ResolvedModel = { providerID: 'acp', modelID: 'agent', npm: ACP_NPM }
+    let calls = 0
+    await assert.rejects(
+      () =>
+        runModelChain(
+          buildChainCandidates({ chain: [acp, B] }),
+          async () => {
+            calls += 1
+            throw new FakeHttpError('overloaded', 503)
+          },
+          { alsoFallBackOn: CREDENTIAL_ERROR_CLASSES }
+        ),
+      AcpCallFailedError as never
+    )
+    assert.equal(calls, 1)
   })
 
   test('throws the last error when the entire chain is exhausted', async ({ assert }) => {
