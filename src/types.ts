@@ -10,7 +10,7 @@ import type {
   ToolCallRepairFunction,
   ToolSet,
 } from 'ai'
-import type { ModelPricing } from './budget/types.js'
+import type { AgentCostRecord, ModelPricing } from './budget/types.js'
 import type { ActionGuard, ToolPermission } from './guard/types.js'
 import type { ConfirmationService } from './guard/confirmation.js'
 import type { AcpProviderConfig } from './acp/types.js'
@@ -123,6 +123,17 @@ export interface BudgetConfig {
   maxCostPerRequestUsd?: number
   defaultAgentName?: string
   pricing?: Record<string, ModelPricing>
+  /**
+   * Called for every cost record, e.g. to persist it to a database. It may be async, but it is
+   * never awaited; a thrown error or a rejection is logged and never fails the call.
+   * Read only when the manager creates its own `CostTracker`.
+   */
+  sink?: (record: AgentCostRecord) => void | Promise<void>
+  /**
+   * Maximum number of cost records kept in memory (oldest evicted first); `0` keeps aggregates only.
+   * Default: 10_000. Read only when the manager creates its own `CostTracker`.
+   */
+  maxRecords?: number
 }
 
 export interface CatalogConfig {

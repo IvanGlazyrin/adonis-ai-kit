@@ -14,6 +14,7 @@ export * from './budget/index.js'
 export * from './models/index.js'
 export * from './json_recovery.js'
 export * from './approvals/index.js'
+export { normalizeUsage, sumUsage, EMPTY_USAGE } from './usage.js'
 
 // Explicitly resolve re-export ambiguities from star exports
 export type { ToolPermission } from './guard/index.js'

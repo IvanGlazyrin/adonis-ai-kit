@@ -55,7 +55,7 @@ export default defineConfig({
 | Key | Description |
 | :--- | :--- |
 | `fallbackModels` | Model per fallback provider, e.g. `{ anthropic: 'claude-sonnet-5-5' }` |
-| `budget` | `pricing` (USD per 1M tokens per model), `defaultAgentName`. `maxTokensPerRequest` and `maxCostPerRequestUsd` only log a warning when a call goes over them; they do not stop it (see [Token Budget](/guide/budget-and-cost)) |
+| `budget` | `pricing` (USD per 1M tokens per model), `defaultAgentName`, `sink` (called with every cost record, may be async, never awaited) and `maxRecords` (records kept in memory, `0` keeps aggregates only; see [Persisting cost records](/guide/budget-and-cost#persisting-cost-records)). `maxTokensPerRequest` and `maxCostPerRequestUsd` only log a warning when a call goes over them; they do not stop it (see [Token Budget](/guide/budget-and-cost)) |
 | `catalog` | models.dev settings: `preferCache`, `cachePath`, `overridePath`, `ttlMs`, `autoPricing`, `systemProviders` |
 | `agentConfigsDir` / `agentSkillsDir` | Agent manifests and skills (default `resources/agent-configs`, `resources/agent-skills`) |
 | `resolver` / `languageModels` | Resolve and build entries of `models` chains |

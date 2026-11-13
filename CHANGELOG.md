@@ -15,6 +15,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `ModelChainOptions.alsoFallBackOn`: error classes that move `runModelChain` on to the next entry although they are `fatal`. They do not count against the circuit breaker. Without it, `runModelChain` behaves as before.
 - `CREDENTIAL_ERROR_CLASSES` (`auth_error`, `billing_error`), exported from `adonis-ai-kit` and `adonis-ai-kit/models`.
 - `fallbackOnCredentialErrors` option on model-chain calls and in `AiConfig` (default `true`).
+- `budget.sink` and `budget.maxRecords` in `AiConfig`: the manager passes them to the `CostTracker` it creates, so cost records can be persisted and memory bounded from `config/ai.ts`. The sink may be async; it is never awaited, and a throw or a rejection is logged with `warn`. `CostTrackerOptions.sink` accepts an async function too.
+- `normalizeUsage`, `sumUsage` and `EMPTY_USAGE` are exported from `adonis-ai-kit`.
 
 ### Changed
 

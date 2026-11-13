@@ -25,10 +25,10 @@ export interface CostTrackerOptions {
    */
   maxRecords?: number
   /**
-   * Called synchronously for every recorded entry, e.g. to persist it to a database.
-   * Errors thrown by the sink are logged and never break the caller.
+   * Called for every recorded entry, e.g. to persist it to a database. It may be async, but the
+   * tracker never awaits it. A thrown error or a rejected promise is logged and never breaks the caller.
    */
-  sink?: (record: AgentCostRecord) => void
+  sink?: (record: AgentCostRecord) => void | Promise<void>
 }
 
 interface Aggregate {
@@ -40,6 +40,14 @@ interface Aggregate {
 
 const DEFAULT_MAX_RECORDS = 10_000
 const MAX_WARNED_MODELS = 1_000
+
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return (
+    value !== null &&
+    (typeof value === 'object' || typeof value === 'function') &&
+    typeof (value as { then?: unknown }).then === 'function'
+  )
+}
 
 function newAggregate(): Aggregate {
   return { tokens: 0, cost: 0, calls: 0, totalDurationMs: 0 }
@@ -64,7 +72,7 @@ export class CostTracker {
   private ringStart = 0
   private ringSize = 0
   private maxRecords: number
-  private sink?: (record: AgentCostRecord) => void
+  private sink?: (record: AgentCostRecord) => void | Promise<void>
 
   private byAgent = new Map<string, Aggregate>()
   private byModel = new Map<string, Aggregate>()
@@ -150,7 +158,13 @@ export class CostTracker {
 
     if (this.sink) {
       try {
-        this.sink(record)
+        const pending = this.sink(record)
+        // Not awaited: a slow database must not slow down the model call.
+        if (isPromiseLike(pending)) {
+          Promise.resolve(pending).catch((err) => {
+            this.logger?.warn?.('[CostTracker] Sink failed:', err)
+          })
+        }
       } catch (err) {
         this.logger?.warn?.('[CostTracker] Sink failed:', err)
       }

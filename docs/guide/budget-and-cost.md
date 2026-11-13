@@ -50,6 +50,45 @@ console.log(tracker.getByModel())
 
 A standalone tracker is created with `new CostTracker({ maxRecords: 10_000, pricing, sink })` from `adonis-ai-kit/budget`. Memory stays bounded by `maxRecords` (default 10,000) under sustained load, while the running aggregates stay exact.
 
+### Persisting cost records
+
+The manager builds its own tracker from `config.budget`, so `sink` and `maxRecords` work without constructing anything by hand:
+
+```ts
+// config/ai.ts
+import db from '@adonisjs/lucid/services/db'
+import { defineConfig } from 'adonis-ai-kit'
+
+export default defineConfig({
+  // ...
+  budget: {
+    maxRecords: 1_000, // records kept in memory; 0 keeps aggregates only
+    sink: async (record) => {
+      await db.table('ai_cost_records').insert({
+        agent_name: record.agentName,
+        provider: record.metadata?.provider,
+        model: record.model,
+        input_tokens: record.inputTokens,
+        output_tokens: record.outputTokens,
+        cache_read_tokens: record.cacheReadTokens,
+        cache_write_tokens: record.cacheWriteTokens,
+        reasoning_tokens: record.reasoningTokens,
+        total_tokens: record.totalTokens,
+        cost_usd: record.costUsd,
+        duration_ms: record.durationMs,
+        created_at: new Date(record.timestamp),
+      })
+    },
+  },
+})
+```
+
+The sink gets one record per call, with the provider in `metadata.provider`. It is not awaited, so a slow database never slows a model call. A thrown error or a rejected promise is logged with `logger.warn` and does not fail the call, which also means a failed insert is lost; retry inside the sink if you need that. `sink` and `maxRecords` are read only when the manager creates its own `CostTracker`; a tracker you pass to `new AiManager(...)` is used as given.
+
+### Usage helpers
+
+`normalizeUsage(raw)`, `sumUsage(items)` and `EMPTY_USAGE` are exported from `adonis-ai-kit`. They turn AI SDK usage (v7 or legacy field names) into one `TokenUsage` shape, cache and reasoning tokens included, so your own code does not need to re-implement it.
+
 ---
 
 ## Atomic Token Budget Enforcement

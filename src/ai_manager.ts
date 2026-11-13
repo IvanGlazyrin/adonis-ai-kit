@@ -477,6 +477,8 @@ export class AiManager {
       new CostTracker({
         pricing: config.budget?.pricing,
         logger: this.logger,
+        sink: config.budget?.sink,
+        maxRecords: config.budget?.maxRecords,
       })
     this.toolRegistry = toolRegistry ?? new ToolRegistry({ logger: this.logger })
     this.confirmation = confirmation ?? new ConfirmationService({ logger: this.logger })
