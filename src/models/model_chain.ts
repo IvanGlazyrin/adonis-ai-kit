@@ -91,6 +91,7 @@ export interface ModelChainOptions {
   /**
    * Error classes that move on to the next candidate although the classifier calls them `fatal`, for example
    * `CREDENTIAL_ERROR_CLASSES`. The breaker does not count them. Without it, only retryable failures move on.
+   * Ignored for an ACP agent: it runs its own tools inside the call, so its failure is thrown (fail-closed).
    */
   alsoFallBackOn?: ReadonlySet<ErrorClass>
 }
@@ -208,11 +209,12 @@ function fallbackTarget(input: {
   logger: Logger | undefined
 }): ChainCandidate {
   const { candidate, model, classification, toolsExecuted, alsoFallBackOn, next, error, logger } = input
-  const canFallBack =
-    classification.kind === 'retryable' ||
-    classification.kind === 'skip' ||
-    (classification.kind === 'fatal' && alsoFallBackOn?.has(classification.errorClass) === true)
-  const acpCallFailed = classification.kind === 'retryable' && model.npm === ACP_NPM
+  const isAcp = model.npm === ACP_NPM
+  // An ACP agent runs its own tools inside the call, so `alsoFallBackOn` never applies to it.
+  const fallsBackOnClass =
+    classification.kind === 'fatal' && !isAcp && alsoFallBackOn?.has(classification.errorClass) === true
+  const canFallBack = classification.kind === 'retryable' || classification.kind === 'skip' || fallsBackOnClass
+  const acpCallFailed = classification.kind === 'retryable' && isAcp
   if (canFallBack && !toolsExecuted && !acpCallFailed && next) return next
 
   logger?.warn(

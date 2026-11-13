@@ -359,6 +359,31 @@ test.group('runModelChain', () => {
     assert.equal(calls, 1)
   })
 
+  test('a 401 from an ACP entry is thrown even with alsoFallBackOn', async ({ assert }) => {
+    const acp: ResolvedModel = { providerID: 'acp', modelID: 'agent', npm: ACP_NPM }
+    const breaker = new CircuitBreaker({ failureThreshold: 1 })
+    const events: FallbackEvent[] = []
+    const original = new FakeHttpError('Unauthorized acp', 401)
+    let calls = 0
+    let thrown: unknown
+    try {
+      await runModelChain(
+        buildChainCandidates({ chain: [acp, B] }),
+        async () => {
+          calls += 1
+          throw original
+        },
+        { breaker, alsoFallBackOn: CREDENTIAL_ERROR_CLASSES, onFallback: (e) => events.push(e) }
+      )
+    } catch (error) {
+      thrown = error
+    }
+    assert.strictEqual(thrown, original)
+    assert.notInstanceOf(thrown, AcpCallFailedError)
+    assert.equal(calls, 1)
+    assert.lengthOf(events, 0)
+  })
+
   test('throws the last error when the entire chain is exhausted', async ({ assert }) => {
     const { resolver } = recordingResolver()
     const { calls, attempt } = harness({

@@ -61,6 +61,7 @@ await ai.generateText({
 
 - A credential failure does not count against the circuit breaker of that entry; it stays `closed`.
 - The same limits apply as for any fallback: nothing moves on after a tool has run, and a `401` on the last entry is thrown as it is.
+- An ACP agent never falls back on a credential error: it runs its own tools inside the call, so its `401` is thrown as it is.
 - The provider cascade (no `models`) is not affected: there a `401` is still thrown.
 - To restore the earlier behaviour, where these errors are thrown, set `fallbackOnCredentialErrors: false` on the call, or in the config for every call. The call's value wins over the config's.
 - With `runModelChain` directly, pass `alsoFallBackOn: CREDENTIAL_ERROR_CLASSES` (exported from `adonis-ai-kit` and `adonis-ai-kit/models`). Without it, only retryable failures move on. Any set of error classes can be given.

@@ -245,10 +245,14 @@ export interface ModelChainCallOptions {
   /**
    * Whether a failure of the entry's credential (401, 403, 402) moves on to the next entry of `models`, which may
    * carry another key. Default: `AiConfig.fallbackOnCredentialErrors`, then true. A 401 on the last entry, or after
-   * a tool ran, is thrown either way. The provider cascade is not affected.
+   * a tool ran, is thrown either way, and so is one from an ACP agent. The provider cascade is not affected.
    */
   fallbackOnCredentialErrors?: boolean
-  /** Called when a model failed with a retryable error, or could not be attempted (missing provider package, config error, open breaker), and the next entry is about to be tried. */
+  /**
+   * Called when a model failed with a retryable error, or with a credential error (401, 403, 402) while
+   * `fallbackOnCredentialErrors` is on, or could not be attempted (missing provider package, config error, open
+   * breaker), and the next entry is about to be tried.
+   */
   onFallback?: (event: FallbackEvent) => unknown
 }
 
