@@ -99,7 +99,10 @@
     "typecheck": "tsc --noEmit -p tsconfig.test.json",
     "clean": "node -e \"fs.rmSync('dist', { recursive: true, force: true })\"",
     "test:regression": "node tests/regression.mjs && node tests/regression_adonis.mjs",
-    "test": "node --import=@poppinss/ts-exec bin/test.ts"
+    "test": "node --import=@poppinss/ts-exec bin/test.ts",
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs"
   },
   "repository": {
     "type": "git",
@@ -148,7 +151,8 @@
     "@poppinss/ts-exec": "^1.5.1",
     "@types/node": "^22.0.0",
     "ai": "^7.0.137",
-    "typescript": "^5.0.0 || ^6.0.0"
+    "typescript": "^5.0.0 || ^6.0.0",
+    "vitepress": "^1.6.3"
   },
   "engines": {
     "node": ">=22.0.0"
