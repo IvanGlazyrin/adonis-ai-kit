@@ -217,6 +217,8 @@ export interface AiConfig {
   agentSkillsDir?: string
   /**
    * Whether to log detailed AI calls
+   *
+   * @deprecated Not used; will be removed in 2.0.
    */
   logging?: boolean
   /** Resolves string entries of a call's `models` chain. Required to use model references there. */

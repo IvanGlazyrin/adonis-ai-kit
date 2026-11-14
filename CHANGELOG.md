@@ -25,6 +25,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Model chains (`models: [...]`) now move on to the next entry after a `401`, `403` or `402`, so a revoked user key falls back to the team key. Before, these were thrown at once. The entry's circuit breaker is not affected. Nothing moves on after a tool has run, a failure on the last entry is thrown as is, an ACP agent never falls back on a credential error, and the provider cascade is unchanged. To restore the earlier behaviour, set `fallbackOnCredentialErrors: false` on the call, or in the config for every call.
 - Node.js 24 is now the minimum (`engines.node >=24.0.0`), matching `@adonisjs/core` 7. CI runs on Node 24 and 26, on Ubuntu and Windows.
 
+### Deprecated
+
+- `AiConfig.logging` is not used and is marked `@deprecated`; it will be removed in 2.0.
+
 ### Fixed
 
 - The error classifier no longer reads `max_tokens` in a `400` message as a too-long prompt: `400 "max_tokens must be <= 8192"` is now `invalid_request` (fatal) instead of `prompt_too_long` (retryable). The hints are now `too long`, `context length`, `context window` and `maximum context`. For a no-output error, the upstream status is matched as a whole word (`401`, `403`, `429`, `500`, `502`, `503`), so a message such as `took 1500ms` stays `no_output_generated` instead of `server_error`.
