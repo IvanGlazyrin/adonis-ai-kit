@@ -397,7 +397,8 @@ await t('error taxonomy: status codes map to fine-grained classes', () => {
   assert.equal(c(apiError(503)), 'server_error')
   assert.equal(c({ statusCode: 400 }), 'invalid_request')
   assert.equal(c(Object.assign(new Error('context length exceeded'), { statusCode: 400 })), 'prompt_too_long')
-  assert.equal(c(Object.assign(new Error('max_tokens exceeded'), { statusCode: 400 })), 'prompt_too_long')
+  assert.equal(c(Object.assign(new Error('prompt is too long'), { statusCode: 400 })), 'prompt_too_long')
+  assert.equal(c(Object.assign(new Error('max_tokens exceeded'), { statusCode: 400 })), 'invalid_request')
 })
 await t('error taxonomy: network/timeout/no-output detection', () => {
   const c = (e) => classifyErrorClass(e)

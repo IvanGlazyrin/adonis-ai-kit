@@ -115,15 +115,15 @@ const CLASS_BY_EXACT_STATUS: Record<number, ErrorClass> = {
   404: 'model_not_found',
 }
 
-const PROMPT_TOO_LONG_STATUS_HINTS = ['too long', 'context length', 'context window', 'maximum context']
+const PROMPT_TOO_LONG_HINTS = ['too long', 'context length', 'context window', 'maximum context']
+
+const isPromptTooLong = (message: string) => PROMPT_TOO_LONG_HINTS.some((hint) => message.includes(hint))
 
 function classByStatusCode(status: number, message: string): ErrorClass {
   const exact = CLASS_BY_EXACT_STATUS[status]
   if (exact) return exact
   if (status === 400) {
-    return PROMPT_TOO_LONG_STATUS_HINTS.some((hint) => message.includes(hint))
-      ? 'prompt_too_long'
-      : 'invalid_request'
+    return isPromptTooLong(message) ? 'prompt_too_long' : 'invalid_request'
   }
   if (status >= 500) return 'server_error'
   return 'unknown'
@@ -152,7 +152,7 @@ function classifyByMessage(message: string): ErrorClass | undefined {
     return 'network_error'
   }
   if (message.includes('timeout') || message.includes('ETIMEDOUT')) return 'timeout'
-  if (message.includes('too long') || message.includes('context length')) return 'prompt_too_long'
+  if (isPromptTooLong(message)) return 'prompt_too_long'
   return undefined
 }
 

@@ -96,6 +96,11 @@ test.group('classifyError', () => {
     assert.equal(classifyErrorClass(e({ name: 'AI_NoOutputGeneratedError' }, 'HTTP 503')), 'server_error')
   })
 
+  test('a message-only context window error is a long prompt', ({ assert }) => {
+    assert.equal(classifyErrorClass(new Error('input exceeds the context window')), 'prompt_too_long')
+    assert.equal(classifyErrorClass(new Error('over the maximum context size')), 'prompt_too_long')
+  })
+
   test('walks a cause chain up to depth 5', ({ assert }) => {
     let err: Record<string, unknown> = { statusCode: 429 }
     for (let i = 0; i < 4; i++) err = { cause: err }
