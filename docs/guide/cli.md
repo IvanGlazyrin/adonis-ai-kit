@@ -29,7 +29,7 @@ The table has the columns `Provider`, `Model`, `Status`, `Latency`, `Circuit Bre
 
 ## `make:ai-agent` {#make-ai-agent}
 
-Scaffold a typed agent class in `app/ai/agents/`:
+Scaffold a typed wrapper class around the `ai` service in `app/ai/agents/`. It is plain TypeScript, not an agent manifest: it does not load a Markdown agent and `ai.agent()` does not read it.
 
 ```bash
 node ace make:ai-agent CodeReviewer --provider=anthropic --model=claude-sonnet-5-5 --max-tokens=4096
@@ -37,4 +37,12 @@ node ace make:ai-agent CodeReviewer --provider=anthropic --model=claude-sonnet-5
 
 This creates `app/ai/agents/code_reviewer_agent.ts` with a `CodeReviewerAgent` class (agent name `codereviewer-agent`), a system prompt, and `run()` / `stream()` methods that call `ai.generateText()` / `ai.streamText()` with the provider, model and `maxOutputTokens` (default 2048). The file default-exports an instance. An existing file is not overwritten.
 
-For agents loaded with `ai.agent()`, write a Markdown manifest instead (see [Agents & Manifests](/guide/agents)).
+The file is generated from a stub, so you can override it with your own `stubs/make/agent.stub` in the app.
+
+The input is checked before anything is written, because it ends up in generated code. The command fails with exit code 1 when:
+
+- the name is not letters and digits starting with a letter (`/^[A-Za-z][A-Za-z0-9]*$/`), so `../x` or `a/b` is rejected;
+- `--provider` or `--model` contains anything other than letters, digits and `_ . / : @ -`;
+- `--max-tokens` is not a positive integer.
+
+Agents loaded with `ai.agent()` are Markdown manifests, not classes. To create one, write the manifest by hand (see [Agents & Manifests](/guide/agents)).

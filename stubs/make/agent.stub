@@ -1,0 +1,64 @@
+{{{
+  exports({ to: app.makePath('app/ai/agents', fileName) })
+}}}
+import ai from 'adonis-ai-kit/services/main'
+import type { GenerateTextResult, StreamTextResult } from 'adonis-ai-kit/types'
+
+export interface {{ className }}Input {
+  prompt: string
+  context?: Record<string, unknown>
+}
+
+/**
+ * {{ className }}
+ * Production-ready AI agent with token budgeting and structured execution.
+ */
+export class {{ className }} {
+  public readonly agentName = '{{ agentName }}'
+  public readonly defaultProvider = {{{ provider ? "'" + provider + "'" : 'undefined' }}}
+  public readonly defaultModel = {{{ model ? "'" + model + "'" : 'undefined' }}}
+  public readonly maxOutputTokens = {{ maxTokens }}
+
+  /**
+   * System prompt establishing role, instructions, and guardrails.
+   */
+  protected getSystemPrompt(): string {
+    return [
+      'You are {{ className }}, an expert AI assistant.',
+      'Provide concise, accurate, and actionable answers.',
+      'Always follow system security guidelines.',
+    ].join('\\n')
+  }
+
+  /**
+   * Executes synchronous text generation.
+   */
+  async run(input: {{ className }}Input): Promise<GenerateTextResult> {
+    return ai.generateText({
+      agentName: this.agentName,
+      provider: this.defaultProvider,
+      model: this.defaultModel,
+      maxOutputTokens: this.maxOutputTokens,
+      system: this.getSystemPrompt(),
+      prompt: input.prompt,
+      metadata: input.context,
+    })
+  }
+
+  /**
+   * Streams response in real time (e.g. for Server-Sent Events or WebSockets).
+   */
+  async stream(input: {{ className }}Input): Promise<StreamTextResult> {
+    return ai.streamText({
+      agentName: this.agentName,
+      provider: this.defaultProvider,
+      model: this.defaultModel,
+      maxOutputTokens: this.maxOutputTokens,
+      system: this.getSystemPrompt(),
+      prompt: input.prompt,
+      metadata: input.context,
+    })
+  }
+}
+
+export default new {{ className }}()

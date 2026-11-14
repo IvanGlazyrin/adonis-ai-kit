@@ -1,11 +1,15 @@
 import { BaseCommand, args, flags } from '@adonisjs/core/ace'
 import type { CommandOptions } from '@adonisjs/core/types/ace'
-import fs from 'node:fs/promises'
-import path from 'node:path'
+import { stubsRoot } from '../stubs/main.js'
+
+const NAME_PATTERN = /^[A-Za-z][A-Za-z0-9]*$/
+/** Provider keys and model ids: letters, digits and `_ . / : @ -`. Nothing that can leave a string literal. */
+const IDENTIFIER_PATTERN = /^[\w./:@-]+$/
 
 export default class MakeAiAgentCommand extends BaseCommand {
   static commandName = 'make:ai-agent'
-  static description = 'Scaffold a production-grade typed AI Agent class'
+  static description =
+    'Scaffold a typed wrapper class around the ai service (not a Markdown agent manifest for ai.agent())'
 
   static options: CommandOptions = {
     startApp: false,
@@ -14,98 +18,56 @@ export default class MakeAiAgentCommand extends BaseCommand {
   @args.string({ description: 'Name of the AI Agent class (e.g. MarketAnalysis, SupportChat, Coder)' })
   declare name: string
 
-  @flags.string({ description: 'AI provider to use (default: app default)', default: '' })
-  declare provider: string
+  @flags.string({ description: 'AI provider to use (default: app default)' })
+  declare provider?: string
 
-  @flags.string({ description: 'Model to use (e.g. gpt-6-sol, claude-sonnet-5-5)', default: '' })
-  declare model: string
+  @flags.string({ description: 'Model to use (e.g. gpt-6-sol, claude-sonnet-5-5)' })
+  declare model?: string
 
   @flags.number({ description: 'Max token budget per request', default: 2048 })
   declare maxTokens: number
 
   async run() {
-    const rawName = this.name.replace(/Agent$/i, '')
-    const className = rawName.charAt(0).toUpperCase() + rawName.slice(1) + 'Agent'
-    const fileName = rawName.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase() + '_agent.ts'
-
-    const targetDir = path.join(this.app.makePath('app/ai/agents'))
-    await fs.mkdir(targetDir, { recursive: true })
-    const targetFile = path.join(targetDir, fileName)
-
-    const exists = await fs
-      .access(targetFile)
-      .then(() => true)
-      .catch(() => false)
-
-    if (exists) {
-      this.ui.logger.error(`Agent file already exists: ${targetFile}`)
+    const rawName = String(this.name).replace(/Agent$/i, '')
+    const problem = this.validate(rawName)
+    if (problem) {
+      this.logger.error(problem)
+      this.exitCode = 1
       return
     }
 
-    const template = `import ai from 'adonis-ai-kit/services/main'
-import type { GenerateTextResult, StreamTextResult } from 'adonis-ai-kit/types'
+    const className = rawName.charAt(0).toUpperCase() + rawName.slice(1) + 'Agent'
+    const fileName = rawName.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase() + '_agent.ts'
 
-export interface ${className}Input {
-  prompt: string
-  context?: Record<string, unknown>
-}
-
-/**
- * ${className}
- * Production-ready AI agent with token budgeting and structured execution.
- */
-export class ${className} {
-  public readonly agentName = '${rawName.toLowerCase()}-agent'
-  public readonly defaultProvider = ${this.provider ? `'${this.provider}'` : 'undefined'}
-  public readonly defaultModel = ${this.model ? `'${this.model}'` : 'undefined'}
-  public readonly maxOutputTokens = ${this.maxTokens}
-
-  /**
-   * System prompt establishing role, instructions, and guardrails.
-   */
-  protected getSystemPrompt(): string {
-    return [
-      'You are ${className}, an expert AI assistant.',
-      'Provide concise, accurate, and actionable answers.',
-      'Always follow system security guidelines.',
-    ].join('\\n')
-  }
-
-  /**
-   * Executes synchronous text generation.
-   */
-  async run(input: ${className}Input): Promise<GenerateTextResult> {
-    return ai.generateText({
-      agentName: this.agentName,
-      provider: this.defaultProvider,
-      model: this.defaultModel,
-      maxOutputTokens: this.maxOutputTokens,
-      system: this.getSystemPrompt(),
-      prompt: input.prompt,
-      metadata: input.context,
+    const codemods = await this.createCodemods()
+    const result = await codemods.makeUsingStub(stubsRoot, 'make/agent.stub', {
+      fileName,
+      className,
+      agentName: `${rawName.toLowerCase()}-agent`,
+      provider: this.provider ?? '',
+      model: this.model ?? '',
+      maxTokens: this.maxTokens,
     })
+
+    if (result.status === 'skipped') {
+      this.logger.error(`Agent file already exists: ${result.destination}`)
+    }
   }
 
-  /**
-   * Streams response in real time (e.g. for Server-Sent Events or WebSockets).
-   */
-  async stream(input: ${className}Input): Promise<StreamTextResult> {
-    return ai.streamText({
-      agentName: this.agentName,
-      provider: this.defaultProvider,
-      model: this.defaultModel,
-      maxOutputTokens: this.maxOutputTokens,
-      system: this.getSystemPrompt(),
-      prompt: input.prompt,
-      metadata: input.context,
-    })
-  }
-}
-
-export default new ${className}()
-`
-
-    await fs.writeFile(targetFile, template.trim() + '\n', 'utf8')
-    this.ui.logger.success(`Created AI Agent: ${targetFile}`)
+  /** The first problem with the input, or `null` when it can be written into a source file safely. */
+  private validate(rawName: string): string | null {
+    if (!NAME_PATTERN.test(String(this.name)) || rawName === '') {
+      return `Invalid name "${this.name}": use letters and digits only, starting with a letter (for example MarketAnalysis)`
+    }
+    if (this.provider !== undefined && !IDENTIFIER_PATTERN.test(this.provider)) {
+      return `Invalid --provider "${this.provider}": use letters, digits and _ . / : @ - only`
+    }
+    if (this.model !== undefined && !IDENTIFIER_PATTERN.test(this.model)) {
+      return `Invalid --model "${this.model}": use letters, digits and _ . / : @ - only`
+    }
+    if (!Number.isInteger(this.maxTokens) || this.maxTokens < 1) {
+      return `Invalid --max-tokens "${this.maxTokens}": use a positive integer`
+    }
+    return null
   }
 }
