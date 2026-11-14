@@ -5,6 +5,10 @@
 - Node.js `>= 24.0.0`
 - AdonisJS `>= 7.0.0`
 - TypeScript `>= 5.0.0`
+- `zod` `^3.25.76 || ^4.1.8` (a peer dependency; `ai` 7 already requires it, so it is installed with the AI SDK)
+
+> [!NOTE]
+> `zod` is a peer dependency so your schemas (`schema`, tool `inputSchema`) and the package share one copy of it. Two copies would break type checks and `instanceof` checks.
 
 ---
 
