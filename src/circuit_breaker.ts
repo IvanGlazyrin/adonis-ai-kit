@@ -12,6 +12,8 @@ interface InternalStats {
   nextAttemptAllowedAt: number | null
 }
 
+const DEFAULT_MAX_KEYS = 10_000
+
 /**
  * A reservation obtained from `CircuitBreaker.acquire()`. It settles exactly once: after the first
  * `success()`, `failure()` or `release()`, further calls do nothing.
@@ -36,11 +38,13 @@ export interface BreakerPermit {
  * does not take the whole provider down. A plain provider name works as a key too.
  */
 export class CircuitBreaker {
+  /** Insertion order is the recency order: the first entry is the least recently touched. */
   private stats: Map<string, InternalStats> = new Map()
   private failureThreshold: number
   private recoveryTimeoutMs: number
   private halfOpenMaxAttempts: number
   private halfOpenMaxConcurrent: number
+  private maxKeys: number
   private onStateChange?: (key: string, from: CircuitBreakerState, to: CircuitBreakerState) => void
 
   constructor(config: CircuitBreakerConfig = {}) {
@@ -48,28 +52,55 @@ export class CircuitBreaker {
     this.recoveryTimeoutMs = Math.max(0, config.recoveryTimeoutMs ?? 30_000)
     this.halfOpenMaxAttempts = Math.max(1, config.halfOpenMaxAttempts ?? 2)
     this.halfOpenMaxConcurrent = Math.max(1, config.halfOpenMaxConcurrent ?? 1)
+    this.maxKeys =
+      Number.isInteger(config.maxKeys) && config.maxKeys! >= 1 ? config.maxKeys! : DEFAULT_MAX_KEYS
     this.onStateChange = config.onStateChange
   }
 
-  private getOrInitStats(key: string): InternalStats {
-    let s = this.stats.get(key)
-    if (!s) {
-      s = {
-        state: 'closed',
-        failures: 0,
-        successes: 0,
-        inFlightProbes: 0,
-        epoch: 0,
-        lastFailureTime: null,
-        nextAttemptAllowedAt: null,
-      }
-      this.stats.set(key, s)
+  private newStats(): InternalStats {
+    return {
+      state: 'closed',
+      failures: 0,
+      successes: 0,
+      inFlightProbes: 0,
+      epoch: 0,
+      lastFailureTime: null,
+      nextAttemptAllowedAt: null,
     }
+  }
+
+  /**
+   * Returns the entry for `key`, creating it when missing, and marks it as the most recently used.
+   * Only the calls that change or reserve state touch a key; read-only calls never do.
+   */
+  private touch(key: string): InternalStats {
+    let s = this.stats.get(key)
+    if (s) {
+      this.stats.delete(key)
+    } else {
+      s = this.newStats()
+    }
+    this.stats.set(key, s)
+    if (this.stats.size > this.maxKeys) this.evict(key)
     return s
   }
 
+  /**
+   * Drops the least recently used healthy keys until the map fits `maxKeys`. A key that is open,
+   * half-open, has failures or has a probe in flight is kept, so the map may stay above the limit
+   * while every key is unhealthy.
+   */
+  private evict(keep: string): void {
+    for (const [key, s] of this.stats) {
+      if (this.stats.size <= this.maxKeys) return
+      if (key === keep) continue
+      if (s.state === 'closed' && s.failures === 0 && s.inFlightProbes === 0) this.stats.delete(key)
+    }
+  }
+
   getState(key: string): CircuitBreakerState {
-    const s = this.getOrInitStats(key)
+    const s = this.stats.get(key)
+    if (!s) return 'closed'
     if (s.state === 'open' && s.nextAttemptAllowedAt !== null && Date.now() >= s.nextAttemptAllowedAt) {
       this.transition(key, s, 'half_open')
     }
@@ -81,7 +112,7 @@ export class CircuitBreaker {
     const state = this.getState(key)
     if (state === 'closed') return true
     if (state === 'half_open') {
-      return this.getOrInitStats(key).inFlightProbes < this.halfOpenMaxConcurrent
+      return (this.stats.get(key)?.inFlightProbes ?? 0) < this.halfOpenMaxConcurrent
     }
     return false
   }
@@ -91,7 +122,7 @@ export class CircuitBreaker {
    * probe slot is taken. Unlike `isAvailable()`, a half-open permit holds a probe slot until settled.
    */
   acquire(key: string): BreakerPermit | null {
-    const s = this.getOrInitStats(key)
+    const s = this.touch(key)
     const state = this.getState(key)
     if (state === 'open') return null
 
@@ -140,8 +171,8 @@ export class CircuitBreaker {
 
     if (!permit) {
       if (this.getState(key) === 'open') {
-        const s = this.getOrInitStats(key)
-        const remainingMs = s.nextAttemptAllowedAt
+        const s = this.stats.get(key)
+        const remainingMs = s?.nextAttemptAllowedAt
           ? Math.max(0, s.nextAttemptAllowedAt - Date.now())
           : this.recoveryTimeoutMs
         throw new ProviderUnavailableError(
@@ -167,7 +198,7 @@ export class CircuitBreaker {
   }
 
   recordSuccess(key: string): void {
-    const s = this.getOrInitStats(key)
+    const s = this.touch(key)
     if (s.state === 'half_open') {
       s.successes++
       if (s.successes >= this.halfOpenMaxAttempts) {
@@ -183,7 +214,7 @@ export class CircuitBreaker {
   }
 
   recordFailure(key: string, _error?: unknown): void {
-    const s = this.getOrInitStats(key)
+    const s = this.touch(key)
     s.lastFailureTime = Date.now()
 
     if (s.state === 'closed') {
@@ -197,7 +228,8 @@ export class CircuitBreaker {
   }
 
   reset(key: string): void {
-    const s = this.getOrInitStats(key)
+    const s = this.stats.get(key)
+    if (!s) return
     const prev = s.state
     s.failures = 0
     s.successes = 0
@@ -213,7 +245,7 @@ export class CircuitBreaker {
   }
 
   getStats(key: string): CircuitBreakerStats {
-    const s = this.getOrInitStats(key)
+    const s = this.stats.get(key) ?? this.newStats()
     const state = this.getState(key)
     return {
       state,

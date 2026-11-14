@@ -46,6 +46,13 @@ export interface CircuitBreakerConfig {
    */
   halfOpenMaxConcurrent?: number
   /**
+   * Maximum number of keys the breaker tracks. When it is exceeded, the least recently used key that
+   * is closed, has no failures and has no probe in flight is dropped. Open and half-open keys are never
+   * dropped, so the count can stay above the limit while every key is unhealthy. A value below 1 or
+   * that is not an integer is ignored. Default: 10000
+   */
+  maxKeys?: number
+  /**
    * Optional callback when circuit breaker state changes. Errors thrown here are swallowed.
    * The first argument is the breaker key (`provider:model`).
    */

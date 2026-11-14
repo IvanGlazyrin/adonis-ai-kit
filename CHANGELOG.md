@@ -27,6 +27,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `CircuitBreaker` no longer grows without limit. It tracks at most `maxKeys` keys (new option, default `10000`) and drops the least recently used key that is closed, has no failures and has no probe in flight; an open or half-open key is never dropped. This matters in model chains, where the breaker key includes the user's credential key. `getState`, `isAvailable` and `getStats` on an unknown key no longer create an entry.
 - An `AcpDriver` created with a prebuilt `runtime` now merges its `config.env` into the agent environment (on top of `runtime.env`, the same order as without a prebuilt runtime). Before, `config.env` was ignored on that path. Code that sets `config.env` together with `runtime` will see those variables reach the agent. This is what makes `acp.env` work for agents started from `buildAcpRuntimeConfig`.
 - An `ask` tool from `ToolRegistry.getToolsWithApprovals()` passed to `AiManager` without `toolPermissions` no longer runs without approval: the tool carries its permission, so a resumable run pauses at it.
 

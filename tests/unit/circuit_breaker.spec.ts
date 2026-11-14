@@ -132,3 +132,52 @@ test.group('CircuitBreaker.execute slot handling', () => {
     assert.deepEqual(transitions, ['half_open->open'])
   })
 })
+
+test.group('CircuitBreaker maxKeys', () => {
+  test('evicts the least recently used healthy key', ({ assert }) => {
+    const b = new CircuitBreaker({ maxKeys: 2 })
+    b.recordSuccess('a')
+    b.recordSuccess('b')
+    b.recordSuccess('a') // 'b' is now the least recently used
+    b.recordSuccess('c')
+    assert.deepEqual(Object.keys(b.getAllStats()).sort(), ['a', 'c'])
+  })
+
+  test('never evicts an open key', ({ assert }) => {
+    const b = new CircuitBreaker({ maxKeys: 2, failureThreshold: 1, recoveryTimeoutMs: 60_000 })
+    b.recordFailure('open') // oldest, but open
+    b.recordSuccess('b')
+    b.recordSuccess('c')
+    assert.deepEqual(Object.keys(b.getAllStats()).sort(), ['c', 'open'])
+    assert.equal(b.getState('open'), 'open')
+  })
+
+  test('never evicts a key with failures or a half-open key', ({ assert }) => {
+    const b = new CircuitBreaker({ maxKeys: 2, failureThreshold: 3, recoveryTimeoutMs: 0 })
+    b.recordFailure('failing') // closed, failures === 1
+    b.recordFailure('probing')
+    b.recordFailure('probing')
+    b.recordFailure('probing') // opens; zero cooldown makes it half-open
+    assert.equal(b.getState('probing'), 'half_open')
+    b.recordSuccess('x')
+    b.recordSuccess('y')
+    assert.deepEqual(Object.keys(b.getAllStats()).sort(), ['failing', 'probing', 'y'])
+  })
+
+  test('read-only calls on an unknown key do not create an entry or evict a real key', ({ assert }) => {
+    const b = new CircuitBreaker({ maxKeys: 1 })
+    b.recordSuccess('a')
+    assert.equal(b.getState('ghost'), 'closed')
+    assert.isTrue(b.isAvailable('ghost'))
+    assert.equal(b.getStats('ghost').failures, 0)
+    assert.deepEqual(Object.keys(b.getAllStats()), ['a'])
+  })
+
+  test('an invalid maxKeys falls back to the default', ({ assert }) => {
+    for (const maxKeys of [0, -1, 1.5, Number.NaN]) {
+      const b = new CircuitBreaker({ maxKeys })
+      for (let i = 0; i < 20; i++) b.recordSuccess(`k${i}`)
+      assert.lengthOf(Object.keys(b.getAllStats()), 20)
+    }
+  })
+})

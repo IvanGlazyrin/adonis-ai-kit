@@ -37,6 +37,7 @@ circuitBreaker: {
   recoveryTimeoutMs: 30_000,  // Wait 30s before testing with probe requests
   halfOpenMaxAttempts: 2,     // Require 2 successful probe requests to close
   halfOpenMaxConcurrent: 1,   // Probes allowed in flight while half-open
+  maxKeys: 10_000,            // Keys tracked at once; the least recently used healthy key is dropped
   onStateChange: (key, from, to) => logger.warn(`${key}: ${from} -> ${to}`),
 }
 ```
@@ -44,6 +45,7 @@ circuitBreaker: {
 - **Isolated Tracking:** A failure in `openai:gpt-6-sol` trips its breaker without affecting other OpenAI models or other providers.
 - **Fail-Fast:** When a circuit is open, the candidate is skipped without a network call and the next one is tried.
 - `ai.getCircuitBreaker().getStats('openai:gpt-6-sol')` returns its state.
+- **Bounded memory:** The breaker keeps at most `maxKeys` keys. Past that, the least recently used key that is closed and has no failures is dropped. An open or half-open key is never dropped, so the count can exceed `maxKeys` while every key is unhealthy.
 
 ---
 
