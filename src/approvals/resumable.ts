@@ -1,6 +1,6 @@
 import type { ModelMessage, ToolSet } from 'ai'
 import type { ConversationStore, JsonValue } from '../conversations/types.js'
-import type { ToolPermission } from '../guard/types.js'
+import { permissionMarkOf, type ToolPermission } from '../guard/types.js'
 import type { ApprovalState, PendingApproval, StoredApproval } from './types.js'
 
 /** What a call sees for an approval whose tool may have started and whose result was never stored. */
@@ -10,7 +10,8 @@ type ToolOutput = NonNullable<StoredApproval['output']>
 
 /**
  * The AI SDK approval status of each offered tool: `ask` waits for a person (`user-approval`), `allow` needs none
- * (`not-applicable`). A tool denied by its permission is not offered, so it has no status.
+ * (`not-applicable`). A tool denied by its permission is not offered, so it has no status. An entry in `permissions`
+ * wins, then the permission the registry put on the tool, then `allow`.
  */
 export function toolApprovalFor(
   tools: ToolSet | undefined,
@@ -18,7 +19,7 @@ export function toolApprovalFor(
 ): Record<string, 'user-approval' | 'not-applicable'> {
   const statuses: Record<string, 'user-approval' | 'not-applicable'> = {}
   for (const name of Object.keys(tools ?? {})) {
-    const permission = permissions && Object.hasOwn(permissions, name) ? permissions[name] : 'allow'
+    const permission = permissions && Object.hasOwn(permissions, name) ? permissions[name] : (permissionMarkOf(tools?.[name]) ?? 'allow')
     if (permission === 'deny') continue
     statuses[name] = permission === 'ask' ? 'user-approval' : 'not-applicable'
   }

@@ -75,7 +75,7 @@ console.log(run.pendingApprovals)
 // ]
 ```
 
-`ai.conversations.pendingApprovals(id, owner)` returns the same list later. For registry tools, use `registry.getToolsWithApprovals(agentName)` and pass both `tools` and `toolPermissions`: without the permissions, a non-MCP tool is read as `allow` and runs with no approval.
+`ai.conversations.pendingApprovals(id, owner)` returns the same list later. For registry tools, use `registry.getToolsWithApprovals(agentName)`: each tool carries its permission, so an `ask` tool pauses the run without `toolPermissions`. An entry in `toolPermissions` wins over it. Pass `toolPermissions` only for tools that do not come from the registry (and for MCP tools, which carry no permission).
 
 ---
 

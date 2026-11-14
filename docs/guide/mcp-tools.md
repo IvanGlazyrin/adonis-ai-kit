@@ -54,6 +54,7 @@ registry.setAgentPermissions('support-agent', {
   mcp__filesystem__write: 'ask', // Require confirmation
 })
 
+// MCP tools carry no permission of their own: pass toolPermissions together with the tools
 const { tools, toolPermissions } = registry.getToolsWithApprovals('support-agent')
 await ai.generateText({ prompt, tools, toolPermissions })
 ```

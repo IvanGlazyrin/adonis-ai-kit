@@ -1,3 +1,4 @@
+import { TOOL_PERMISSION } from './types.js'
 import type {
   ActionGuard,
   ConfirmationResponse,
@@ -8,6 +9,7 @@ import type {
 import type { ConfirmationService } from './confirmation.js'
 import { PolicyViolationError } from './errors.js'
 import { resultOf } from '../tool_stream.js'
+import { isMcpTool } from '../mcp/types.js'
 
 export interface ToolAccessOptions {
   guard?: ActionGuard
@@ -296,8 +298,8 @@ export class ToolRegistry {
    * returned without the confirmation wrapper (the run pauses instead), with `user-approval`; `allow` tools get
    * `not-applicable`. `options.guard` still checks every tool. `deny` tools are left out.
    *
-   * Pass `toolPermissions` together with `tools` to `AiManager`. Without it the manager reads a non-MCP tool as `allow`,
-   * so an `ask` tool would run with no approval.
+   * Each returned tool (an MCP tool excepted) carries its permission, so `AiManager` pauses an `ask` tool even when
+   * `toolPermissions` is not passed next to it.
    */
   getToolsWithApprovals(
     agentName: string,
@@ -316,7 +318,8 @@ export class ToolRegistry {
       if (permission === 'deny') continue
       toolPermissions[name] = permission
       toolApproval[name] = permission === 'ask' ? 'user-approval' : 'not-applicable'
-      tools[name] = options.guard ? this.wrapTool(name, tool, { ...options, permission: 'allow' }) : tool
+      const handedOut = options.guard ? this.wrapTool(name, tool, { ...options, permission: 'allow' }) : tool
+      tools[name] = this.marked(handedOut, permission)
     }
 
     return { tools, toolApproval, toolPermissions }
@@ -345,10 +348,17 @@ export class ToolRegistry {
       )
     }
 
-    if (permission === 'allow' && !options.guard) {
-      return tool
-    }
+    // The wrapper enforces `ask` here, so the mark is `allow`: the manager must not confirm a second time.
+    const handedOut = permission === 'allow' && !options.guard ? tool : this.wrapTool(name, tool, { ...options, permission })
+    return this.marked(handedOut, 'allow')
+  }
 
-    return this.wrapTool(name, tool, { ...options, permission })
+  /**
+   * A copy of `tool` carrying `permission` (the registered tool is never changed). A tool from an MCP server is
+   * returned as it is: it stays fail-closed in the manager until a permission is passed for it.
+   */
+  private marked(tool: ToolDefinition, permission: ToolPermission): ToolDefinition {
+    if (isMcpTool(tool)) return tool
+    return { ...tool, [TOOL_PERMISSION]: permission }
   }
 }

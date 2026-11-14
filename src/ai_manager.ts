@@ -32,7 +32,7 @@ import { ToolRegistry } from './guard/registry.js'
 import { isAsyncIterable, resultOf } from './tool_stream.js'
 import { McpTools } from './mcp/mcp_tools.js'
 import { isMcpTool } from './mcp/types.js'
-import type { ToolDefinition, ToolPermission } from './guard/types.js'
+import { permissionMarkOf, type ToolDefinition, type ToolPermission } from './guard/types.js'
 import { CircuitBreaker } from './circuit_breaker.js'
 import {
   AcpCallFailedError,
@@ -267,12 +267,13 @@ function pricingMapOf(models: ModelCatalogEntry[]): Record<string, ModelPricing>
 }
 
 /**
- * The permission of a tool in a call. An explicit entry wins. Without one, a tool from an MCP server is 'deny'
- * (fail-closed, even when it is passed here directly), and any other tool is 'allow'.
+ * The permission of a tool in a call. An explicit entry wins, then the permission the registry put on the tool. Without
+ * either, a tool from an MCP server is 'deny' (fail-closed, even when it is passed here directly), and any other
+ * tool is 'allow'.
  */
 function toolPermission(permissions: Record<string, ToolPermission> | undefined, name: string, tool?: unknown): ToolPermission {
   if (hasOwnPermission(permissions, name)) return permissions![name]
-  return isMcpTool(tool) ? 'deny' : 'allow'
+  return permissionMarkOf(tool) ?? (isMcpTool(tool) ? 'deny' : 'allow')
 }
 
 /** Whether a tool that runs locally declares the AI SDK's own `needsApproval` (`true` or a function). */

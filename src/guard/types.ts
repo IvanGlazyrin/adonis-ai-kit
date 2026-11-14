@@ -3,6 +3,20 @@ export type { Logger } from '../logger.js'
 export type ToolPermission = 'allow' | 'ask' | 'deny'
 
 /**
+ * The permission the registry resolved for a tool it handed out, stored on a copy of the tool. `AiManager` and
+ * `AgentRunner` read it when `toolPermissions` has no entry for the tool. `Symbol.for` keeps the mark across module
+ * copies, and an object spread (`{ ...tool }`) keeps it too.
+ */
+export const TOOL_PERMISSION = Symbol.for('adonis-ai-kit.tool-permission')
+
+/** The permission carried by a tool (its `TOOL_PERMISSION` mark), or `undefined` when it has none. */
+export function permissionMarkOf(tool: unknown): ToolPermission | undefined {
+  if (typeof tool !== 'object' || tool === null || !Object.hasOwn(tool, TOOL_PERMISSION)) return undefined
+  const mark = (tool as Record<symbol, unknown>)[TOOL_PERMISSION]
+  return mark === 'allow' || mark === 'ask' || mark === 'deny' ? mark : undefined
+}
+
+/**
  * Structural shape of an AI SDK tool (v5+: `inputSchema`; legacy v4 tools used `parameters`).
  * Extra keys (`outputSchema`, `providerOptions`, ...) are preserved when a tool is wrapped.
  */

@@ -4,13 +4,15 @@ import { ToolRegistry } from '../../../src/guard/index.js'
 const tool = (label: string) => ({ description: label, execute: async () => label })
 
 test.group('ToolRegistry tool resolution', () => {
-  test('an allowed tool with no guard is returned as the very same object', ({ assert }) => {
+  test('an allowed tool with no guard is returned unwrapped, as a marked copy', ({ assert }) => {
     const registered = tool('a')
     const registry = new ToolRegistry({ defaultPermission: 'deny' }).registerTool('a', registered)
 
     const [got] = Object.values(registry.getToolsByList(['a'], { permissions: { a: 'allow' } }))
 
-    assert.strictEqual(got, registered)
+    assert.notStrictEqual(got, registered)
+    assert.strictEqual(got.execute, registered.execute)
+    assert.deepEqual(Object.getOwnPropertySymbols(registered), [])
   })
 
   test('a tool missing from the per-call map takes the registry default', ({ assert }) => {

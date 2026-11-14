@@ -17,6 +17,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `fallbackOnCredentialErrors` option on model-chain calls and in `AiConfig` (default `true`).
 - `budget.sink` and `budget.maxRecords` in `AiConfig`: the manager passes them to the `CostTracker` it creates, so cost records can be persisted and memory bounded from `config/ai.ts`. The sink may be async; it is never awaited, and a throw or a rejection is logged with `warn`. `CostTrackerOptions.sink` accepts an async function too.
 - `normalizeUsage`, `sumUsage` and `EMPTY_USAGE` are exported from `adonis-ai-kit`.
+- `TOOL_PERMISSION` and `permissionMarkOf` (from `adonis-ai-kit` and `adonis-ai-kit/guard`): `ToolRegistry` puts the permission it resolved on a copy of each tool it hands out (an MCP tool excepted), and `AiManager` and `AgentRunner` read it. Precedence: an entry in `toolPermissions` or the agent manifest, then the mark, then `deny` for an MCP tool, then `allow`. `getToolsWithApprovals()` marks the real permission; `getToolsForAgent()` and `getToolsByList()` mark `allow`, because their `ask` wrapper already confirms the call.
 
 ### Changed
 
@@ -26,6 +27,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - An `AcpDriver` created with a prebuilt `runtime` now merges its `config.env` into the agent environment (on top of `runtime.env`, the same order as without a prebuilt runtime). Before, `config.env` was ignored on that path. Code that sets `config.env` together with `runtime` will see those variables reach the agent. This is what makes `acp.env` work for agents started from `buildAcpRuntimeConfig`.
+- An `ask` tool from `ToolRegistry.getToolsWithApprovals()` passed to `AiManager` without `toolPermissions` no longer runs without approval: the tool carries its permission, so a resumable run pauses at it.
 
 ## [1.3.0] - 2026-11-02
 

@@ -359,6 +359,45 @@ test('registry: getToolsWithApprovals returns user-approval for ask and keeps th
   assert.lengthOf(ran, 0)
 })
 
+test('an ask tool from getToolsWithApprovals pauses the run without toolPermissions', async ({ assert }) => {
+  const registry = new ToolRegistry()
+  const fixture = dangerTools()
+  registry.registerTool('danger', fixture.tools.danger as never)
+  const { tools } = registry.getToolsWithApprovals('agent', { permissions: { danger: 'ask' } })
+  const ai = managerFor(fakeModel(askOnce()))
+  const conversation = await ai.conversations.start('user:1')
+
+  const result = await ai.generateText({
+    prompt: 'run it',
+    tools: tools as never,
+    approvals: 'resumable',
+    conversation: { id: conversation.id, owner: 'user:1' },
+  })
+
+  assert.equal(result.status, 'awaiting-approval')
+  assert.lengthOf(fixture.inputs.danger, 0)
+})
+
+test('the mark survives the manager wrapping the tool with a guard', async ({ assert }) => {
+  const registry = new ToolRegistry()
+  const fixture = dangerTools()
+  registry.registerTool('danger', fixture.tools.danger as never)
+  const { tools } = registry.getToolsWithApprovals('agent', { permissions: { danger: 'ask' } })
+  const ai = managerFor(fakeModel(askOnce()))
+  const conversation = await ai.conversations.start('user:1')
+
+  const result = await ai.generateText({
+    prompt: 'run it',
+    tools: tools as never,
+    toolGuard: { guard: { check: () => null } },
+    approvals: 'resumable',
+    conversation: { id: conversation.id, owner: 'user:1' },
+  })
+
+  assert.equal(result.status, 'awaiting-approval')
+  assert.lengthOf(fixture.inputs.danger, 0)
+})
+
 test('pendingApprovals lists the open approvals of a conversation', async ({ assert }) => {
   const { ai, conversation } = await paused()
   const open = await ai.conversations.pendingApprovals(conversation.id, 'user:1')

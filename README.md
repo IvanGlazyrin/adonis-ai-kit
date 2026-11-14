@@ -510,8 +510,9 @@ const done = await ai.conversations.resolveApprovals(conversation.id, 'user:42',
   not sent as `messages`: pass the conversation instead.
   `prompt` must be a string (`E_AI_INVALID_ARGUMENT`); a message list goes in `messages`, where this check applies.
 - **Registry tools.** `ToolRegistry.getToolsWithApprovals(agentName, options)` returns `tools`, `toolApproval` and
-  `toolPermissions`. Pass the tools together with `toolPermissions` to `AiManager`: without them, a tool that is not an MCP
-  tool is read as `allow`, and an `ask` tool runs with no approval.
+  `toolPermissions`. Each tool it returns carries its permission, so `AiManager` pauses an `ask` tool even when you pass
+  only `tools`. Precedence: an entry in `toolPermissions` (or the agent manifest), then the tool's own permission, then
+  `deny` for an MCP tool, then `allow`. An MCP tool carries none: pass `toolPermissions` with it.
 - **Limits.** A provider-executed tool (`type: 'provider'`) with `ask` is refused (`E_AI_CONFIG_ERROR`), since the
   provider does not sign approvals. A sub-agent cannot ask (see `agentAsTool`). ACP agents keep `ConfirmationService`.
   A retry after a failed model call re-sends the model the stored results of approved tools; tools with `allow` are

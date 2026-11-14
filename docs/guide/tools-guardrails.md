@@ -55,11 +55,11 @@ A permission is looked up in the agent's matrix (`setAgentPermissions`), then th
 
 > [!IMPORTANT]
 > The registry operates on a **deny-by-default** model (`defaultPermission: 'deny'`): tools without a permission cannot run.
-> `AiManager` reads `toolPermissions` from each call instead: there, a tool with no entry is `allow`, except MCP tools, which stay `deny`. Use `registry.getToolsWithApprovals(agentName)` to get both `tools` and `toolPermissions` for a manager call.
+> Tools the registry hands out carry the permission it resolved for them, and `AiManager` and `AgentRunner` read it. Precedence for a call: an entry in `toolPermissions` (or the agent manifest), then the tool's own permission, then `deny` for an MCP tool, then `allow`. MCP tools carry no permission, so pass `toolPermissions` with them.
 
 ```ts
-const { tools, toolPermissions } = registry.getToolsWithApprovals('support-bot')
-await ai.generateText({ prompt, tools, toolPermissions })
+const { tools } = registry.getToolsWithApprovals('support-bot')
+await ai.generateText({ prompt, tools })
 ```
 
 ---
@@ -96,7 +96,7 @@ const guarded = registry.getToolsForAgent('support-bot', {
 - `check()` reserves a call slot, so parallel tool calls cannot all pass `maxCalls` at once.
 
 > [!WARNING]
-> Tools from `getToolsForAgent()` already carry the registry's `ask` wrapper. Do not pass them to `ai.generateText` with `toolPermissions` marking them `ask` as well; use `getToolsWithApprovals()` for manager calls.
+> Tools from `getToolsForAgent()` and `getToolsByList()` already carry the registry's `ask` wrapper and are marked `allow`, so the manager confirms them once. Do not mark them `ask` in `toolPermissions` as well; use `getToolsWithApprovals()` for resumable approvals.
 
 ---
 
