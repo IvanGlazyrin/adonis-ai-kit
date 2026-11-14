@@ -164,6 +164,37 @@ test.group('CircuitBreaker maxKeys', () => {
     assert.deepEqual(Object.keys(b.getAllStats()).sort(), ['failing', 'probing', 'y'])
   })
 
+  test('acquire refreshes recency', ({ assert }) => {
+    const b = new CircuitBreaker({ maxKeys: 2 })
+    b.recordSuccess('a')
+    b.recordSuccess('b')
+    b.acquire('a')!.release() // 'a' touched only through acquire; 'b' is now the oldest
+    b.recordSuccess('c')
+    assert.deepEqual(Object.keys(b.getAllStats()).sort(), ['a', 'c'])
+  })
+
+  test('a key with a probe in flight is never evicted', ({ assert }) => {
+    const b = new CircuitBreaker({ maxKeys: 2, failureThreshold: 1, recoveryTimeoutMs: 0, halfOpenMaxConcurrent: 1 })
+    b.recordFailure('probing') // zero cooldown: half-open
+    const probe = b.acquire('probing')!
+    assert.isTrue(probe.isProbe)
+    b.recordSuccess('x')
+    b.recordSuccess('y')
+    assert.include(Object.keys(b.getAllStats()), 'probing')
+    assert.isNull(b.acquire('probing')) // the slot is still taken
+    probe.release()
+  })
+
+  test('over the limit with only unhealthy keys, a touch does not scan or evict', ({ assert }) => {
+    const b = new CircuitBreaker({ maxKeys: 1, failureThreshold: 1, recoveryTimeoutMs: 60_000 })
+    b.recordFailure('a')
+    b.recordFailure('b')
+    b.recordFailure('c')
+    assert.lengthOf(Object.keys(b.getAllStats()), 3)
+    b.recordFailure('a')
+    assert.deepEqual(Object.keys(b.getAllStats()).sort(), ['a', 'b', 'c'])
+  })
+
   test('read-only calls on an unknown key do not create an entry or evict a real key', ({ assert }) => {
     const b = new CircuitBreaker({ maxKeys: 1 })
     b.recordSuccess('a')

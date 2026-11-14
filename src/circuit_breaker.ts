@@ -74,15 +74,17 @@ export class CircuitBreaker {
    * Only the calls that change or reserve state touch a key; read-only calls never do.
    */
   private touch(key: string): InternalStats {
-    let s = this.stats.get(key)
-    if (s) {
+    const existing = this.stats.get(key)
+    if (existing) {
       this.stats.delete(key)
-    } else {
-      s = this.newStats()
+      this.stats.set(key, existing)
+      return existing
     }
-    this.stats.set(key, s)
+    const created = this.newStats()
+    this.stats.set(key, created)
+    // Only a new key can push the map over the limit, so only then is there something to evict.
     if (this.stats.size > this.maxKeys) this.evict(key)
-    return s
+    return created
   }
 
   /**
