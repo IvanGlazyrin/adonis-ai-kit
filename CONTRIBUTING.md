@@ -15,6 +15,7 @@ Node 24 or later is required.
 Run all of these. They also run in CI.
 
 ```bash
+npm run lint
 npm run typecheck
 npm test
 npm run build

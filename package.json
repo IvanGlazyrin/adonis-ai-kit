@@ -96,6 +96,7 @@
     "build": "tsc && node -e \"fs.cpSync('stubs','dist/stubs',{recursive:true,filter:s=>!s.endsWith('.ts')})\"",
     "prepack": "npm run clean && npm run build",
     "watch": "tsc --watch",
+    "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.test.json",
     "clean": "node -e \"fs.rmSync('dist', { recursive: true, force: true })\"",
     "test:regression": "node tests/regression.mjs && node tests/regression_adonis.mjs",
@@ -144,6 +145,7 @@
   "devDependencies": {
     "@adonisjs/assembler": "^8.6.0",
     "@adonisjs/core": "^7.4.0",
+    "@adonisjs/eslint-config": "^3.1.0",
     "@ai-sdk/anthropic": "^4.0.0",
     "@ai-sdk/mcp": "^2.0.87",
     "@ai-sdk/openai": "^4.0.0",
@@ -152,6 +154,7 @@
     "@poppinss/ts-exec": "^1.5.1",
     "@types/node": "^22.0.0",
     "ai": "^7.0.137",
+    "eslint": "^10.15.0",
     "typescript": "^5.0.0 || ^6.0.0",
     "vitepress": "^1.6.3",
     "zod": "^4.6.7"
