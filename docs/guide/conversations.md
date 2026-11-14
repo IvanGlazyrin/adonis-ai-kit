@@ -30,8 +30,8 @@ console.log(turn2.conversation) // { id, version }
 
 `ai.conversations` also has `get(id, owner)`, `list(owner, { limit, cursor })` and `delete(id, owner)`.
 
-- A turn is stored as one unit after the model answers. A call that fails stores nothing; a stream is stored when it ends normally.
-- The system prompt is not stored: it is sent on every call as `system`.
+- A turn is stored as one unit after the model answers: the user messages and the model's response messages. A call that fails stores nothing. A stream is stored when it ends normally; an aborted or failed stream stores nothing.
+- The system prompt is not stored: it is sent on every call as `system`. `messages` with `role: 'system'` are sent but not stored.
 - Binary parts (`Uint8Array`, `ArrayBuffer`, `URL`) cannot be stored (`E_AI_INVALID_ARGUMENT`, before the model is called).
 - Stored messages are validated when loaded; a bad one raises `ConversationCorruptError`.
 
@@ -101,7 +101,7 @@ export default defineConfig({
 })
 ```
 
-`append` must check `owner` and `expectedVersion` in one transaction and throw `ConversationNotFoundError` or `ConversationConflictError`. Verify the adapter with `conversationStoreContract` (see [Testing](/guide/testing)).
+`append` must check `owner` and `expectedVersion` in one transaction and throw `ConversationNotFoundError` or `ConversationConflictError`. Persistence of files is outside the kit. Verify the adapter with `conversationStoreContract` (see [Testing](/guide/testing)).
 
 A table layout that fits the store port:
 

@@ -3,7 +3,7 @@ layout: home
 
 hero:
   name: "Adonis AI Kit"
-  text: "Production-ready AI & Agentic Workflows for AdonisJS 7"
+  text: "AI and agent workflows for AdonisJS 7"
   tagline: "Vercel AI SDK v7, multi-provider cascading fallback, circuit breakers, tool security guardrails, token budget tracking, and ACP coding agents."
   actions:
     - theme: brand

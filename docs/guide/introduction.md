@@ -1,24 +1,24 @@
 # Introduction
 
-**Adonis AI Kit** (`adonis-ai-kit`) brings production-grade AI and autonomous agentic workflows to the [AdonisJS 7](https://adonisjs.com) framework.
+**Adonis AI Kit** (`adonis-ai-kit`) is an AI toolkit for the [AdonisJS 7](https://adonisjs.com) framework: text and structured generation, streaming, tools, agents, and the controls around them.
 
-Built atop **Vercel AI SDK v7**, the package pairs TypeScript developer experience with SRE-level operational stability, addressing the unique challenges of high-concurrency Node.js microservices: rate limits, upstream outages, unauthorized tool executions, budget overruns, and process restarts.
+It is built on **Vercel AI SDK v7**. On top of the SDK it adds provider fallback, circuit breakers, a tool registry that denies by default, token and cost tracking, a live model catalog (models.dev), MCP servers as tools, and ACP coding agents. It deals with rate limits, upstream outages, unapproved tool runs, runaway cost and process restarts.
 
 ---
 
-## Architectural Comparison: Adonis AI Kit vs. Laravel AI
+## Comparison: Adonis AI Kit vs. Laravel AI and Prism
 
-While PHP ecosystems like Laravel AI provide prompt abstractions on top of standard HTTP clients, `adonis-ai-kit` was engineered from the ground up for asynchronous streaming, event loops, and zero-downtime deployments:
+Laravel AI and Prism are PHP libraries that wrap provider APIs behind the Laravel HTTP client. `adonis-ai-kit` is a Node.js package that sits on the AI SDK and adds the resilience, tool-control and cost features below. The right-hand column describes what those PHP libraries do at the time of writing; check their documentation for the current state.
 
 | Capability | `adonis-ai-kit` (AdonisJS 7) | Laravel AI / Prism (PHP) |
 | :--- | :--- | :--- |
 | **Foundation Engine** | **Vercel AI SDK v7** (native Node.js async streams & tool calls) | Custom provider drivers over Laravel HTTP client (`curl` / `Guzzle`) |
 | **Circuit Breakers** | **Isolated per `provider:model`** (half-open states, probe limits) | Global or none |
-| **Cascading Failovers** | **Strict fail-closed safety**: no failover after a local tool ran, a provider-executed tool was called, or an ACP agent failed | Non-streaming failover re-runs calls, including executed tools (`Promptable::withModelFailover`) |
-| **Tool Guardrails** | **Fail-closed `ToolRegistry`** (`deny` default); in-process HITL or signed resumable approvals | Opt-in, persisted tool approvals; `Stop` middleware |
-| **Token Budget & Cost** | **Live USD pricing**, ring-buffer memory, cache-read discounts, reasoning surcharges | Token counts only, no monetary cost tracking |
+| **Cascading Failovers** | **Fail-closed**: no failover after a local tool ran, a provider-executed tool was called, or an ACP agent failed | Non-streaming failover re-runs the call, including executed tools (`Promptable::withModelFailover`); streaming stops failover after the first output |
+| **Tool Guardrails** | **Fail-closed `ToolRegistry`** (`deny` default); in-process HITL for `ask` tools, or signed resumable approvals (`approvals: 'resumable'`) that are stored and survive a restart. Tools passed straight to `AiManager` default to `allow` | Opt-in, persisted tool approvals; `Stop` middleware |
+| **Token Budget & Cost** | **Live USD pricing**, ring-buffer memory, cache-read and reasoning tokens | Token counts only, no monetary cost tracking |
 | **Catalog Auto-Discovery**| **models.dev integration** with disk TTL cache & atomic writes | Defaults per provider class plus `config/ai.php`; no live catalog |
-| **MCP Integration** | Deny by default, names `mcp__<server>__<tool>`, untrusted description cleaning, SHA-256 pins against changed definitions | MCP tools need no approval by default; names `mcp_tools_<tool>` without the server |
+| **MCP Integration** | Through `ToolRegistry` only: default `deny`, names `mcp__<server>__<tool>`, `ask` supported, tool and parameter descriptions treated as untrusted, SHA-256 pins against changed definitions. Tools passed straight to `AiManager` default to `allow`; MCP tools do not | MCP tools need no approval by default (`needsApproval` returns `false`); names `mcp_tools_<tool>` without the server |
 | **Coding Sub-Agents** | **ACP (Agent Client Protocol)** for Claude Code, opencode and others, with a sanitized environment | Basic prompt templates |
 | **HTTP Streaming** | **`response.streamAI()` macro** with heartbeats, SSE frames & client-abort hook | PHP chunked response buffers |
 
@@ -28,29 +28,29 @@ While PHP ecosystems like Laravel AI provide prompt abstractions on top of stand
 
 ```mermaid
 flowchart TD
-    UserApp["AdonisJS Controller / Service"] --> AiManager["AiManager (Singleton Service)"]
-    
-    subgraph SRE_Resilience ["SRE Resilience & Fallback Layer"]
-        AiManager --> CircuitBreaker["Circuit Breaker (provider:model)"]
-        CircuitBreaker --> FallbackCascade["Cascading Provider Fallback"]
-    end
-    
-    subgraph Execution_Layer ["Execution & Agent Layer"]
-        FallbackCascade --> Providers["LLM Drivers (OpenAI, Anthropic, Google, Groq, ACP)"]
-        FallbackCascade --> AgentRunner["AgentRunner (Manifest + Skills)"]
-        AgentRunner --> ToolRegistry["Tool Registry (PolicyGuard)"]
-        ToolRegistry --> HITL["ConfirmationService (Human-in-the-Loop)"]
+    UserApp["AdonisJS controller / service"] --> AiManager["AiManager (singleton, 'ai')"]
+    UserApp --> AgentRunner["AgentRunner (ai.agent(): manifest + skills)"]
+    AgentRunner --> AiManager
+
+    subgraph Resilience ["Resilience and fallback"]
+        AiManager --> CircuitBreaker["Circuit breaker (per provider:model)"]
+        CircuitBreaker --> FallbackCascade["Provider fallback / models chain"]
     end
 
-    subgraph Observability_Cost ["Observability & Governance"]
-        Providers --> CostTracker["CostTracker (Ring Buffer)"]
-        Providers --> BudgetEnforcer["BudgetEnforcer (Atomic Reservations)"]
-        AiManager -.-> ModelsDev["models.dev Catalog (Live Pricing & Limits)"]
+    subgraph Execution ["Execution and tools"]
+        FallbackCascade --> Providers["Drivers (OpenAI, Anthropic, Google, Groq, ACP, ...)"]
+        AiManager --> ToolRegistry["ToolRegistry + PolicyGuard"]
+        ToolRegistry --> HITL["ConfirmationService or resumable approvals"]
     end
 
-    subgraph Transport_Layer ["Transport Layer"]
-        AiManager --> SSE["response.streamAI() Macro (SSE / Heartbeats / Abort)"]
+    subgraph Cost ["Cost and catalog"]
+        AiManager --> CostTracker["CostTracker (ring buffer)"]
+        AiManager -.-> ModelsDev["models.dev catalog (pricing, limits)"]
     end
+
+    UserApp -.->|"optional, called by your code"| BudgetEnforcer["BudgetEnforcer (reserve / settle / release)"]
+
+    AiManager --> SSE["response.streamAI() (SSE, heartbeats, abort)"]
 ```
 
 ---

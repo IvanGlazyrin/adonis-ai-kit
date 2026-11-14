@@ -21,6 +21,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The README is now a short quickstart that links to the guide in `docs/guide/`. The guide has a workflow (`.github/workflows/docs.yml`) that builds it and deploys it to GitHub Pages from `main`. `SECURITY.md` and `CONTRIBUTING.md` are new.
 - `zod` is now a peer dependency (`^3.25.76 || ^4.1.8`) instead of a dependency, so your schemas and the package share one copy. Apps that use `ai` 7 already have it installed.
 - Model chains (`models: [...]`) now move on to the next entry after a `401`, `403` or `402`, so a revoked user key falls back to the team key. Before, these were thrown at once. The entry's circuit breaker is not affected. Nothing moves on after a tool has run, a failure on the last entry is thrown as is, an ACP agent never falls back on a credential error, and the provider cascade is unchanged. To restore the earlier behaviour, set `fallbackOnCredentialErrors: false` on the call, or in the config for every call.
 - Node.js 24 is now the minimum (`engines.node >=24.0.0`), matching `@adonisjs/core` 7. CI runs on Node 24 and 26, on Ubuntu and Windows.

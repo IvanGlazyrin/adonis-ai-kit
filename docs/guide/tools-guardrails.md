@@ -104,4 +104,4 @@ const guarded = registry.getToolsForAgent('support-bot', {
 
 ## Streaming Tools
 
-A streaming tool (an `async function*`) runs once and gives only its final value (the last chunk) when it runs under a tool guard, with an `ask` permission, or with resumable approvals in the call that continues a paused step (`resolveApprovals` / `resume`). Its intermediate chunks are then not shown to the model or to the caller. Without these wrappers it streams as usual.
+A streaming tool (an `async function*`) runs once and gives only its final value (the last chunk) when it runs under a tool guard, with an `ask` permission, or with resumable approvals in the call that continues a paused step (`resolveApprovals` / `resume`, for every tool of that call). Its intermediate chunks are then not shown to the model or to the caller. Without these wrappers it streams as usual.

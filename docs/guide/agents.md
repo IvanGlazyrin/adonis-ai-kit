@@ -85,7 +85,7 @@ Skills are instructional Markdown documents stored in `resources/agent-skills/` 
 ### Eager vs. On-Demand Loading
 
 - **Eager Loading (Default):** The bodies of all listed skills are added to the system prompt.
-- **On-Demand Loading (`skillLoading: on-demand`):** Only skill names and descriptions are in the system prompt. The model calls the built-in `loadSkill` tool when it needs a skill, and the body comes back as a tool result.
+- **On-Demand Loading (`skillLoading: on-demand`):** Only skill names and descriptions are in the system prompt. The model calls the built-in `loadSkill` tool when it needs a skill, and the body comes back as a tool result (it stays in the run's history, not in the system prompt).
 
 ```markdown
 ---
@@ -97,8 +97,9 @@ skills:
 ```
 
 - Each `loadSkill` call uses one step of the tool loop, so raise `stop_steps` if a run needs several skills.
-- `loadSkill` is reserved: a caller tool with that name is refused, and a manifest `deny` or `ask` for it is a config error.
-- A skill over 256 KB, or a symlink to a file outside the skills directory, is not loaded.
+- `loadSkill` is reserved: a caller tool with that name is refused, and a manifest `deny` or `ask` for it is a config error. It runs with `allow` and passes through `toolGuard`.
+- `runStructured` has no tool loop, so it always gets the full prompt.
+- A skill over 256 KB is not loaded in either mode. A skill that is a symlink to a file outside the skills directory is not loaded either.
 
 > [!TIP]
 > On-demand skills keep the base prompt small for agents with many or large skills. A few short skills are simpler as `eager`.
@@ -134,7 +135,7 @@ const result = await lead.run({
 
 1. **Task Only:** Only the task string is forwarded. The parent's chat history is never sent to the sub-agent (the parent model can still copy text from its history into the task).
 2. **Forced Deny-by-Default:** The sub-agent's tools are only those its manifest allows; every other tool is denied (`defaultToolPermission: 'deny'` is forced). Tool guards are not inherited; pass one with `agentAsTool(runner, { toolGuard })`.
-3. **No Unsupervised Approvals:** A manifest with an `ask` tool is refused when the sub-agent tool is created, and an `ask` tool reached at run time fails the parent's tool call with `E_AI_SUBAGENT_APPROVAL_REQUIRED`.
-4. **Failures:** A failed sub-agent returns a tool error (`E_AI_SUBAGENT_FAILED`) to the parent, which goes on. An ACP call failure stops the parent run with `AcpCallFailedError`.
-5. **Budget Accounting:** `SubAgentSpend` collects the sub-agent's tokens and cost; they count toward the parent's budget when passed as `extra` to `stopOnBudget`.
+3. **No Unsupervised Approvals:** A manifest with an `ask` tool is refused when the sub-agent tool is created, and an `ask` tool reached at run time fails the parent's tool call with `E_AI_SUBAGENT_APPROVAL_REQUIRED`. A tool that starts its own work outside the call chain is not covered.
+4. **Failures:** A failed sub-agent returns a tool error (`E_AI_SUBAGENT_FAILED`) to the parent, which goes on. An ACP call failure stops the parent run: the parent call throws `AcpCallFailedError`, and the model gets no further steps, so it cannot start the agent again. In `streamText` the run stops the same way, but the stream ends without an error. The parent does not fall back to another model after a sub-agent ran (the sub-agent call is a tool execution).
+5. **Budget Accounting:** `SubAgentSpend` collects the sub-agent's tokens and cost; they count toward the parent's budget when passed as `extra` to `stopOnBudget`. The cost tracker still records the sub-agent under its own agent name.
 6. **Nesting:** One level by default (`maxDepth: 1`). A `primary` agent cannot be a sub-agent.

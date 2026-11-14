@@ -84,6 +84,12 @@ A failure after a tool has executed throws the attempt's own error. This prevent
 
 ---
 
+## State Lives in One Process
+
+The circuit breaker state, the cost records and the pending in-memory confirmations live in the memory of one process. With several instances, each instance has its own state. `approvals: 'resumable'` with a durable conversation store is the mode that survives restarts and works across instances (see [Human Tool Approval](/guide/resumable-approvals)). To keep cost records, use a `sink` (see [Persisting cost records](/guide/budget-and-cost#persisting-cost-records)).
+
+---
+
 ## Error Classification
 
 Exceptions are classified into actionable error categories (`classifyError`, `isRetryableError`):

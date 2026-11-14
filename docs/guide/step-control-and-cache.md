@@ -67,6 +67,8 @@ const result = await ai.generateText({
 })
 ```
 
+For a call that names an unknown tool, the error passed to the hook lists the allowed tools.
+
 ---
 
 ## Anthropic Prompt Caching (`promptCache`)

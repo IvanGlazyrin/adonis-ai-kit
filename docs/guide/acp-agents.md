@@ -80,7 +80,9 @@ const runtime = buildAcpRuntimeConfig('my-agent', {
 })
 ```
 
-The `sourcecraft` and `freebuff` default agents are deprecated and will be removed from the defaults in 2.0.
+The `sourcecraft` and `freebuff` default agents are deprecated and will be removed from the defaults in 2.0. Register them with `registerAcpAgent()` if you need them.
+
+ACP agents in a `models` chain ask a human through the manager's `ConfirmationService` (see `ai.getConfirmationService()`), like the provider cascade does.
 
 ---
 

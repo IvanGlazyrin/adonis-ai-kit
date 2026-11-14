@@ -189,6 +189,11 @@ const result = await ai.generateText({
 })
 ```
 
+- `result.provider` is the `providerID` of the model that answered and `result.model` is its `modelID`.
+- `fromModel` and `toModel` in `onFallback` are breaker keys: the `credentialKey` when the model has one, otherwise `provider/model`.
+- Entries are tried in order. Retryable failures (429, 5xx, network) and entries that cannot be attempted (missing provider package, config error, open breaker) move on to the next entry. So do 401, 403 and 402, which are about the entry's key (see [Credential errors in model chains](/guide/resilience-and-fallbacks#credential-errors-in-model-chains)). Bad requests, caller aborts and any failure after a tool has run are thrown as they are, and a retryable failure of an ACP agent is thrown as `AcpCallFailedError`. `streamText` falls back on errors before the first chunk.
 - Each entry has its own circuit breaker, keyed by `credentialKey` when present, so one bad tenant key does not block the others.
 - String entries need `config.resolver` (for example a `CatalogModelResolver`); without one a `ProviderConfigError` is thrown.
+- Models are built by `config.languageModels` (a `LanguageModelFactory`). When it is absent, a default one is created lazily. `manager.shutdown()` shuts it down, which stops ACP agents.
+- `schema`, `stopWhen`, `maxRetries` and `onStepFinish` work on the chain path too. An empty `models` array uses the provider cascade.
 - `npm` can be any of the built-in provider packages: `@ai-sdk/openai`, `@ai-sdk/anthropic`, `@ai-sdk/google`, `@ai-sdk/google-vertex`, `@ai-sdk/azure`, `@ai-sdk/amazon-bedrock`, `@ai-sdk/groq`, `@ai-sdk/mistral`, `@ai-sdk/cohere`, `@ai-sdk/xai`, `@ai-sdk/cerebras`, `@ai-sdk/deepinfra`, `@ai-sdk/togetherai`, `@ai-sdk/perplexity`, `@ai-sdk/gateway`, `@ai-sdk/vercel`, `@ai-sdk/openai-compatible`, `@openrouter/ai-sdk-provider`, `@gitlab/gitlab-ai-provider`. Register others with `ProviderFactoryRegistry.register()`.
