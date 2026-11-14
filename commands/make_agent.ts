@@ -1,5 +1,6 @@
 import { BaseCommand, args, flags } from '@adonisjs/core/ace'
 import type { CommandOptions } from '@adonisjs/core/types/ace'
+import { appendFile, readFile } from 'node:fs/promises'
 import { stubsRoot } from '../stubs/main.js'
 
 const NAME_PATTERN = /^[A-Za-z][A-Za-z0-9]*$/
@@ -51,7 +52,12 @@ export default class MakeAiAgentCommand extends BaseCommand {
 
     if (result.status === 'skipped') {
       this.logger.error(`Agent file already exists: ${result.destination}`)
+      return
     }
+
+    // The stub engine trims its output; source files end with exactly one newline.
+    const written = await readFile(result.destination, 'utf8')
+    if (!written.endsWith('\n')) await appendFile(result.destination, '\n')
   }
 
   /** The first problem with the input, or `null` when it can be written into a source file safely. */

@@ -49,6 +49,7 @@ test.group('make:ai-agent command', (group) => {
     assert.include(source, "public readonly agentName = 'marketanalysis-agent'")
     assert.include(source, "].join('\\n')")
     assert.include(source, 'export default new MarketAnalysisAgent()')
+    assert.match(source, /[^\n]\n$/) // ends with exactly one newline
   })
 
   test('a trailing Agent in the name is not doubled', async ({ assert }) => {
@@ -100,7 +101,7 @@ test.group('make:ai-agent command', (group) => {
       const { command, errors } = await runMakeAgent(root, [name])
 
       assert.equal(command.exitCode, 1, name)
-      assert.isTrue(errors.some((e) => e.includes('name')), name)
+      assert.isTrue(errors.some((e) => e.includes('Invalid name')), name)
     }
     assert.isFalse(existsSync(join(root, 'app')))
     assert.isFalse(existsSync(join(root, '..', 'evil_agent.ts')))
@@ -108,8 +109,9 @@ test.group('make:ai-agent command', (group) => {
 
   test('rejects a name that is not an identifier', async ({ assert }) => {
     for (const name of ['1Agent', 'My-Agent', 'My Agent', "A'; process.exit(1); '", 'Agent']) {
-      const { command } = await runMakeAgent(root, [name])
+      const { command, errors } = await runMakeAgent(root, [name])
       assert.equal(command.exitCode, 1, name)
+      assert.isTrue(errors.some((e) => e.includes('Invalid name')), name)
     }
     assert.isFalse(existsSync(join(root, 'app')))
   })
@@ -118,7 +120,7 @@ test.group('make:ai-agent command', (group) => {
     const { command, errors } = await runMakeAgent(root, ['Coder', "--provider=x'; process.exit(1); '"])
 
     assert.equal(command.exitCode, 1)
-    assert.isTrue(errors.some((e) => e.includes('--provider')))
+    assert.isTrue(errors.some((e) => e.includes('Invalid --provider')))
     assert.isFalse(existsSync(join(root, 'app')))
   })
 
@@ -127,15 +129,16 @@ test.group('make:ai-agent command', (group) => {
       const { command, errors } = await runMakeAgent(root, ['Coder', `--model=${model}`])
 
       assert.equal(command.exitCode, 1, model)
-      assert.isTrue(errors.some((e) => e.includes('--model')), model)
+      assert.isTrue(errors.some((e) => e.includes('Invalid --model')), model)
     }
     assert.isFalse(existsSync(join(root, 'app')))
   })
 
   test('rejects a token budget that is not a positive integer', async ({ assert }) => {
     for (const value of ['0', '-5', '1.5']) {
-      const { command } = await runMakeAgent(root, ['Coder', `--max-tokens=${value}`])
+      const { command, errors } = await runMakeAgent(root, ['Coder', `--max-tokens=${value}`])
       assert.equal(command.exitCode, 1, value)
+      assert.isTrue(errors.some((e) => e.includes('Invalid --max-tokens')), value)
     }
     assert.isFalse(existsSync(join(root, 'app')))
   })
