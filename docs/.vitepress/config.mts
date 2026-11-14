@@ -2,13 +2,15 @@ import { defineConfig } from 'vitepress'
 
 export default defineConfig({
   title: 'Adonis AI Kit',
-  description: 'Production-ready AI & Agentic workflow kit for AdonisJS 7 (Vercel AI SDK v7, multi-provider fallbacks, ACP & token budget enforcement)',
+  description: 'AI toolkit for AdonisJS 7 on the Vercel AI SDK v7: provider fallback, circuit breakers, tool guardrails, cost tracking, MCP and ACP agents',
   lang: 'en-US',
+  // The site is served from https://ivanglazyrin.github.io/adonis-ai-kit/
+  base: '/adonis-ai-kit/',
   cleanUrls: true,
   lastUpdated: true,
 
   head: [
-    ['link', { rel: 'icon', href: '/favicon.ico' }],
+    ['link', { rel: 'icon', href: '/adonis-ai-kit/favicon.ico' }],
     ['meta', { name: 'theme-color', content: '#5A45FF' }],
   ],
 
