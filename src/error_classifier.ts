@@ -115,7 +115,7 @@ const CLASS_BY_EXACT_STATUS: Record<number, ErrorClass> = {
   404: 'model_not_found',
 }
 
-const PROMPT_TOO_LONG_STATUS_HINTS = ['too long', 'max_tokens', 'context length']
+const PROMPT_TOO_LONG_STATUS_HINTS = ['too long', 'context length', 'context window', 'maximum context']
 
 function classByStatusCode(status: number, message: string): ErrorClass {
   const exact = CLASS_BY_EXACT_STATUS[status]
@@ -134,11 +134,15 @@ const NO_OUTPUT_ERROR_NAMES: ReadonlySet<unknown> = new Set([
   'NoOutputGeneratedError',
 ])
 
+/** A whole-word HTTP status in the message; digits inside a longer number ("1500ms", "4291") do not count. */
+const NO_OUTPUT_STATUS = /\b(401|403|429|500|502|503)\b/
+
 /** The AI SDK reports no output; the message may still carry the upstream status. */
 function classifyNoOutput(message: string): ErrorClass {
-  if (message.includes('403') || message.includes('401')) return 'auth_error'
-  if (message.includes('429')) return 'rate_limit'
-  if (message.includes('500') || message.includes('502') || message.includes('503')) return 'server_error'
+  const status = NO_OUTPUT_STATUS.exec(message)?.[1]
+  if (status === '401' || status === '403') return 'auth_error'
+  if (status === '429') return 'rate_limit'
+  if (status) return 'server_error'
   return 'no_output_generated'
 }
 

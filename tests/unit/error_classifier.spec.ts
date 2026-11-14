@@ -66,7 +66,34 @@ test.group('classifyError', () => {
     assert.equal(classifyErrorClass(e({ statusCode: 429 })), 'rate_limit')
     assert.equal(classifyErrorClass(new Error('ETIMEDOUT')), 'timeout')
     assert.equal(classifyErrorClass(new Error('ECONNREFUSED')), 'network_error')
-    assert.equal(classifyErrorClass(e({ statusCode: 400 }, 'max_tokens exceeded')), 'prompt_too_long')
+    assert.equal(classifyErrorClass(e({ statusCode: 400 }, 'prompt is too long')), 'prompt_too_long')
+  })
+
+  test('400 "max_tokens must be <= 8192" is an invalid request, not a long prompt', ({ assert }) => {
+    assert.equal(classifyErrorClass(e({ statusCode: 400 }, 'max_tokens must be <= 8192')), 'invalid_request')
+    assert.equal(classifyError(e({ statusCode: 400 }, 'max_tokens must be <= 8192')).kind, 'fatal')
+  })
+
+  test('400 context window and maximum context messages are a long prompt', ({ assert }) => {
+    for (const message of [
+      'input exceeds the context window of this model',
+      'maximum context length is 8192 tokens',
+      'this exceeds the maximum context size',
+    ]) {
+      assert.equal(classifyErrorClass(e({ statusCode: 400 }, message)), 'prompt_too_long', message)
+    }
+  })
+
+  test('a no-output message with a duration is not read as an HTTP status', ({ assert }) => {
+    const err = e({ name: 'AI_NoOutputGeneratedError' }, 'No output generated, took 1500ms')
+    assert.equal(classifyErrorClass(err), 'no_output_generated')
+    assert.equal(classifyErrorClass(e({ name: 'AI_NoOutputGeneratedError' }, 'request id 4291 failed')), 'no_output_generated')
+  })
+
+  test('a no-output message that carries a real status still maps to it', ({ assert }) => {
+    assert.equal(classifyErrorClass(e({ name: 'AI_NoOutputGeneratedError' }, 'upstream returned 429')), 'rate_limit')
+    assert.equal(classifyErrorClass(e({ name: 'AI_NoOutputGeneratedError' }, 'status 401: bad key')), 'auth_error')
+    assert.equal(classifyErrorClass(e({ name: 'AI_NoOutputGeneratedError' }, 'HTTP 503')), 'server_error')
   })
 
   test('walks a cause chain up to depth 5', ({ assert }) => {
