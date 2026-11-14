@@ -281,6 +281,16 @@ function hasNativeApproval(tool: ToolDefinition): boolean {
   return typeof tool.execute === 'function' && tool.needsApproval !== undefined && tool.needsApproval !== null && tool.needsApproval !== false
 }
 
+/**
+ * The caller's own tools that survived `prepareTools`. The approval map is built from these, not from the wrapped
+ * tools, so a wrapper that builds a fresh object cannot lose a tool's permission mark.
+ */
+function callerToolsOf(callerTools: ToolSet | undefined, offered: ToolSet): ToolSet {
+  const own: ToolSet = {}
+  for (const name of Object.keys(offered)) own[name] = callerTools?.[name] ?? offered[name]
+  return own
+}
+
 function hasOwnPermission(permissions: Record<string, ToolPermission> | undefined, name: string): boolean {
   return permissions !== undefined && Object.hasOwn(permissions, name)
 }
@@ -1167,7 +1177,7 @@ export class AiManager {
       // Only `resumable` calls ask the SDK for approvals; in `blocking` mode the SDK sees no approval settings.
       ...(approval
         ? {
-            toolApproval: tools ? toolApprovalFor(tools, options.toolPermissions) : undefined,
+            toolApproval: tools ? toolApprovalFor(callerToolsOf(options.tools, tools), options.toolPermissions) : undefined,
             experimental_toolApprovalSecret: approval.secret.reveal(),
           }
         : {}),

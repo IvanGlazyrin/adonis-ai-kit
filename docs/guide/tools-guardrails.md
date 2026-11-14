@@ -62,6 +62,8 @@ const { tools } = registry.getToolsWithApprovals('support-bot')
 await ai.generateText({ prompt, tools })
 ```
 
+MCP tools carry no mark: they are dropped unless `toolPermissions` lists them. The mark is a convenience, not a trust boundary: whoever passes tools to the manager already controls their permissions.
+
 ---
 
 ## PolicyGuard Rules

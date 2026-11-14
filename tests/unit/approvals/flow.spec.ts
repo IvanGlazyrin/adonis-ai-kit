@@ -398,6 +398,28 @@ test('the mark survives the manager wrapping the tool with a guard', async ({ as
   assert.lengthOf(fixture.inputs.danger, 0)
 })
 
+test("the approval map is built from the caller's tools, not the wrapped ones", async ({ assert }) => {
+  const registry = new ToolRegistry()
+  const fixture = dangerTools()
+  registry.registerTool('danger', fixture.tools.danger as never)
+  const { tools } = registry.getToolsWithApprovals('agent', { permissions: { danger: 'ask' } })
+  const ai = managerFor(fakeModel(askOnce()))
+  // A guard wrapper that builds a fresh object: the mark is not on what the manager hands to the SDK.
+  ai.getToolRegistry().wrapTool = (_name, tool) => ({ description: tool.description, inputSchema: tool.inputSchema, execute: tool.execute })
+  const conversation = await ai.conversations.start('user:1')
+
+  const result = await ai.generateText({
+    prompt: 'run it',
+    tools: tools as never,
+    toolGuard: { guard: { check: () => null } },
+    approvals: 'resumable',
+    conversation: { id: conversation.id, owner: 'user:1' },
+  })
+
+  assert.equal(result.status, 'awaiting-approval')
+  assert.lengthOf(fixture.inputs.danger, 0)
+})
+
 test('pendingApprovals lists the open approvals of a conversation', async ({ assert }) => {
   const { ai, conversation } = await paused()
   const open = await ai.conversations.pendingApprovals(conversation.id, 'user:1')
