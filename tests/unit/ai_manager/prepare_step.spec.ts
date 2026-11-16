@@ -89,7 +89,7 @@ test.group('prepareStep and activeTools (B1)', () => {
     assert.equal(model.calls.length, 2)
   })
 
-  test('a tool denied by permissions is not offered even when activeTools names it', async ({ assert }) => {
+  test('a tool denied by permissions is not offered even when activeTools names it', async () => {
     const tools = fakeTools({ ping: () => 'pong', secret: () => 'x' })
     const model = fakeModel([{ text: 'done' }])
     const m = managerWith(model)

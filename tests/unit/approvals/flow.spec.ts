@@ -1,12 +1,12 @@
 import { test } from '@japa/runner'
-import { generateText, stepCountIs, tool } from 'ai'
+import { generateText, tool } from 'ai'
 import { z } from 'zod'
 import { AiManager } from '../../../src/ai_manager.js'
 import { toolApprovalFor } from '../../../src/approvals/resumable.js'
 import { ApprovalIncompleteError } from '../../../src/approvals/errors.js'
 import { ToolRegistry } from '../../../src/guard/registry.js'
 import { defineConfig } from '../../../src/define_config.js'
-import { AiException } from '../../../src/errors.js'
+import type { AiException } from '../../../src/errors.js'
 import { ConversationNotFoundError } from '../../../src/conversations/errors.js'
 import { MemoryConversationStore } from '../../../src/conversations/memory_store.js'
 import { fakeApiError, fakeLanguageModels, fakeModel, fakeProvider, fakeResolver } from '../../../src/testing/index.js'
@@ -316,7 +316,7 @@ test('no fallback after an approved tool ran', async ({ assert }) => {
   const tools = dangerTools()
   const models = ['fake/a', 'fake/b']
   const conversation = await ai.conversations.start('user:1')
-  const paused = await ai.generateText({
+  const pausedRun = await ai.generateText({
     prompt: 'run it',
     models,
     tools: tools.tools,
@@ -324,7 +324,7 @@ test('no fallback after an approved tool ran', async ({ assert }) => {
     approvals: 'resumable',
     conversation: { id: conversation.id, owner: 'user:1' },
   })
-  const approvalId = paused.pendingApprovals[0].approvalId
+  const approvalId = pausedRun.pendingApprovals[0].approvalId
 
   const err = await rejectionOf(() =>
     ai.conversations.resolveApprovals(conversation.id, 'user:1', [{ approvalId, approved: true }], {
@@ -405,7 +405,7 @@ test("the approval map is built from the caller's tools, not the wrapped ones", 
   const { tools } = registry.getToolsWithApprovals('agent', { permissions: { danger: 'ask' } })
   const ai = managerFor(fakeModel(askOnce()))
   // A guard wrapper that builds a fresh object: the mark is not on what the manager hands to the SDK.
-  ai.getToolRegistry().wrapTool = (_name, tool) => ({ description: tool.description, inputSchema: tool.inputSchema, execute: tool.execute })
+  ai.getToolRegistry().wrapTool = (_name, wrapped) => ({ description: wrapped.description, inputSchema: wrapped.inputSchema, execute: wrapped.execute })
   const conversation = await ai.conversations.start('user:1')
 
   const result = await ai.generateText({

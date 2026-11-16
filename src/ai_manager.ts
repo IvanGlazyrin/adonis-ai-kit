@@ -20,7 +20,7 @@ import type {
 } from 'ai'
 import { extractFirstJsonValue } from './json_recovery.js'
 import { Conversations, type ConversationTurn } from './conversations/conversations.js'
-import { ApprovalRun, approvalsFromMessages, asJson, outputOfError, outputOfResult, pendingViews, toolApprovalFor, toolMessageOf } from './approvals/resumable.js'
+import { type ApprovalRun, approvalsFromMessages, asJson, outputOfError, outputOfResult, pendingViews, toolApprovalFor, toolMessageOf } from './approvals/resumable.js'
 import { ApprovalSignatureError } from './approvals/errors.js'
 import { ApprovalSecret } from './approvals/secret.js'
 import type { PendingApproval } from './approvals/types.js'

@@ -1,6 +1,6 @@
 import { test } from '@japa/runner'
 import { z } from 'zod'
-import { AiException } from '../../../src/errors.js'
+import type { AiException } from '../../../src/errors.js'
 import { MemoryConversationStore } from '../../../src/conversations/memory_store.js'
 import { ToolRegistry } from '../../../src/guard/registry.js'
 import { fakeModel } from '../../../src/testing/index.js'

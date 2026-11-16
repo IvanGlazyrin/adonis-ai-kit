@@ -12,7 +12,7 @@ import type {
   ConversationStore,
   ConversationSummary,
 } from '../../../src/conversations/types.js'
-import { fakeModel, fakeProvider, fakeTools, type FakeModel } from '../../../src/testing/index.js'
+import { fakeProvider, fakeTools, type FakeModel } from '../../../src/testing/index.js'
 
 export const SECRET = 'a'.repeat(32)
 

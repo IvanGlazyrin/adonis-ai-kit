@@ -84,7 +84,7 @@ test.group('sub-agent isolation', () => {
     assert.match(description, /only the task/i)
   })
 
-  test('sub-agent offers only tools allowed by its manifest', async ({ assert }) => {
+  test('sub-agent offers only tools allowed by its manifest', async () => {
     const sub = fakeModel([{ text: 'ok' }])
     const researcher = new AgentRunner(
       managerFor(sub),

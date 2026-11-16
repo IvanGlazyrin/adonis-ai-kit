@@ -168,7 +168,7 @@ test.group('AiManager model resolution without a configured defaultModel', () =>
         warnings: [],
       }),
     })
-    const manager = new AiManager(
+    const solo = new AiManager(
       defineConfig({
         default: 'solo',
         providers: {
@@ -185,7 +185,7 @@ test.group('AiManager model resolution without a configured defaultModel', () =>
       { info() {}, warn() {}, error() {}, debug() {} }
     )
 
-    const result = await manager.generateText({ prompt: 'hi', maxRetries: 0 })
+    const result = await solo.generateText({ prompt: 'hi', maxRetries: 0 })
 
     assert.deepEqual(requested, ['custom'])
     assert.equal(result.model, 'custom')

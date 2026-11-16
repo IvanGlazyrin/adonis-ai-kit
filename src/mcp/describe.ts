@@ -27,6 +27,7 @@ function hasInvisible(text: string): boolean {
 function cleanText(text: string): string {
   return text
     .replace(/[\t\n\r\u{2028}\u{2029}]/gu, ' ')
+    // eslint-disable-next-line no-control-regex -- strips control characters on purpose
     .replace(/[\u{0}-\u{1F}\u{7F}-\u{9F}]/gu, '')
     .replace(INVISIBLE, '')
     .trim()

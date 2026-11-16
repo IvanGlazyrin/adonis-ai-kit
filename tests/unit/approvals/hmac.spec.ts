@@ -3,7 +3,7 @@ import { ApprovalNotFoundError, ApprovalSignatureError } from '../../../src/appr
 import { approvalSecret } from '../../../src/approvals/secret.js'
 import { classifyError } from '../../../src/error_classifier.js'
 import { ConversationConflictError } from '../../../src/conversations/errors.js'
-import { AiException } from '../../../src/errors.js'
+import type { AiException } from '../../../src/errors.js'
 import { fakeModel } from '../../../src/testing/index.js'
 import { JsonRowStore, SECRET, askOnce, dangerTools, managerFor, rejectionOf } from './helpers.js'
 

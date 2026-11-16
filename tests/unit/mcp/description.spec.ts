@@ -42,6 +42,7 @@ test.group('mcp: description', () => {
     const described = await registeredDescription(dirty)
 
     assert.isTrue(described.startsWith('[MCP:fs] Read a file'))
+    // eslint-disable-next-line no-control-regex -- the pattern is the control characters being checked for
     assert.notMatch(described, /[\u0000-\u001f\u007f-\u009f]/)
     assert.isAtMost(Array.from(described).length, MCP_DESCRIPTION_MAX)
     assert.equal(safeDescription('fs', undefined), '[MCP:fs]')
@@ -90,6 +91,7 @@ test.group('mcp: description', () => {
     const parameter = schema.jsonSchema.properties.path.description
 
     assert.isTrue(parameter.startsWith('Path '))
+    // eslint-disable-next-line no-control-regex -- the pattern is the control characters being checked for
     assert.notMatch(parameter, /[\u0000-\u001f\u{202A}-\u{202E}]/u)
     assert.isAtMost(Array.from(parameter).length, MCP_DESCRIPTION_MAX)
   })
