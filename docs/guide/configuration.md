@@ -65,6 +65,24 @@ export default defineConfig({
 
 ---
 
+## Creating the Manager Yourself
+
+The service provider builds the `ai` singleton. To build a manager by hand (a worker, a test, or a library on top of
+the kit), pass the config and, optionally, the services it should use instead of creating its own:
+
+```ts
+import { AiManager, CircuitBreaker, CostTracker, defineConfig } from 'adonis-ai-kit/core'
+
+const ai = new AiManager(defineConfig({ /* ... */ }), {
+  logger,
+  costTracker: new CostTracker({ sink: saveCostRecord }),
+  circuitBreaker: sharedBreaker, // shared with code that calls runModelChain directly
+})
+```
+
+The fields are `logger`, `costTracker`, `toolRegistry`, `catalog`, `agentLoader`, `confirmation`, `mcp` and
+`circuitBreaker`. The positional form `new AiManager(config, logger, costTracker, ...)` still works and is deprecated.
+
 ## Environment Variables
 
 Define your API credentials in `.env`:

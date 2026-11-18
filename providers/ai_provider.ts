@@ -25,7 +25,7 @@ export default class AiProvider {
         providers: {},
       })
       const logger = await this.app.container.make('logger')
-      this.manager = new AiManager(config, logger)
+      this.manager = new AiManager(config, { logger })
       return this.manager
     })
   }

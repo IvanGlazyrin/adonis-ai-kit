@@ -8,6 +8,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - `adonis-ai-kit/core`: every export except the `response.streamAI()` macro and the `configure` hook, for workers, scripts and libraries that build on the kit. Outside an AdonisJS process, default folders resolve under the working directory, as before.
+- `new AiManager(config, options)`: the services the manager uses instead of creating its own (`logger`, `costTracker`, `toolRegistry`, `catalog`, `agentLoader`, `confirmation`, `mcp`) as one object, plus `circuitBreaker`, so code that runs `runModelChain` itself can share the manager's breaker. `AiManagerOptions` is exported.
+
+### Deprecated
+
+- The positional form `new AiManager(config, logger, costTracker, ...)`. It keeps working; it will be removed in 2.0.
 
 ## [1.4.0] - 2026-11-18
 

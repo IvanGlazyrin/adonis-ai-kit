@@ -443,6 +443,41 @@ interface ResumeContext {
 
 const DEFAULT_APPROVAL_TTL_MS = 24 * 60 * 60 * 1000
 
+/** Services an `AiManager` uses instead of creating its own. Every field is optional. */
+export interface AiManagerOptions {
+  logger?: Logger
+  costTracker?: CostTracker
+  toolRegistry?: ToolRegistry
+  catalog?: ModelsDevSource
+  agentLoader?: AgentLoader
+  confirmation?: ConfirmationService
+  mcp?: McpTools
+  /**
+   * The breaker every call goes through. Share one with code that runs `runModelChain` itself, so both see the same
+   * failures. Default: a new breaker built from `config.circuitBreaker`.
+   */
+  circuitBreaker?: CircuitBreaker
+}
+
+/** Whether a value is a logger (it has an `info` method) rather than an options object. */
+function isLogger(value: unknown): value is Logger {
+  return typeof value === 'object' && value !== null && typeof (value as { info?: unknown }).info === 'function'
+}
+
+/**
+ * The constructor's arguments after `config`, as options. One plain object is the options form; anything else
+ * (a logger, `undefined` followed by more arguments, or several arguments) is the positional form.
+ */
+function managerOptionsOf(rest: unknown[]): AiManagerOptions {
+  const [first] = rest
+  const optionsForm = rest.length <= 1 && (first === undefined || (typeof first === 'object' && first !== null && !isLogger(first)))
+  if (optionsForm) return (first as AiManagerOptions | undefined) ?? {}
+  const [logger, costTracker, toolRegistry, catalog, agentLoader, confirmation, mcp] = rest as [
+    Logger?, CostTracker?, ToolRegistry?, ModelsDevSource?, AgentLoader?, ConfirmationService?, McpTools?,
+  ]
+  return { logger, costTracker, toolRegistry, catalog, agentLoader, confirmation, mcp }
+}
+
 /**
  * Central AI Manager for AdonisJS 7 (analog of Laravel AI / Prism).
  * Orchestrates multi-provider drivers, models.dev catalog discovery, ACP agents,
@@ -465,6 +500,8 @@ export class AiManager {
   private approvalSecret?: ApprovalSecret
   private mcpTools?: McpTools
 
+  constructor(config: AiConfig, options?: AiManagerOptions)
+  /** @deprecated Pass the services as an options object: `new AiManager(config, { logger, costTracker, ... })`. */
   constructor(
     config: AiConfig,
     logger?: Logger,
@@ -474,7 +511,10 @@ export class AiManager {
     agentLoader?: AgentLoader,
     confirmation?: ConfirmationService,
     mcp?: McpTools
-  ) {
+  )
+  constructor(config: AiConfig, ...rest: unknown[]) {
+    const { logger, costTracker, toolRegistry, catalog, agentLoader, confirmation, mcp, circuitBreaker } =
+      managerOptionsOf(rest)
     // The secret is kept as an ApprovalSecret, which redacts itself, so `getConfig()` never shows it in clear.
     this.approvalSecret = approvalSecretOf(config)
     this.config =
@@ -482,7 +522,7 @@ export class AiManager {
         ? { ...config, approvals: { ...config.approvals, secret: this.approvalSecret } }
         : config
     this.logger = logger
-    this.circuitBreaker = new CircuitBreaker(config.circuitBreaker)
+    this.circuitBreaker = circuitBreaker ?? new CircuitBreaker(config.circuitBreaker)
     this.costTracker =
       costTracker ??
       new CostTracker({
