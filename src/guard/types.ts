@@ -3,9 +3,10 @@ export type { Logger } from '../logger.js'
 export type ToolPermission = 'allow' | 'ask' | 'deny'
 
 /**
- * The permission the registry resolved for a tool it handed out, stored on a copy of the tool. `AiManager` and
- * `AgentRunner` read it when `toolPermissions` has no entry for the tool. `Symbol.for` keeps the mark across module
- * copies, and an object spread (`{ ...tool }`) keeps it too.
+ * The permission `ToolRegistry.getToolsWithApprovals()` resolved for a tool, stored on a copy of the tool.
+ * `AiManager` reads it when `toolPermissions` has no entry for the tool; `AgentRunner` lets it tighten its own
+ * default, never loosen it. `Symbol.for` keeps the mark across module copies, and an object spread (`{ ...tool }`)
+ * keeps it too.
  */
 export const TOOL_PERMISSION = Symbol.for('adonis-ai-kit.tool-permission')
 

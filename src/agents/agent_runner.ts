@@ -30,6 +30,13 @@ function keepAgentPrompt(prepareStep: PrepareStepFunction<ToolSet> | undefined):
   }
 }
 
+const STRICTNESS: Record<ToolPermission, number> = { allow: 0, ask: 1, deny: 2 }
+
+/** The stricter of a permission and an optional mark. */
+function stricterOf(base: ToolPermission, mark: ToolPermission | undefined): ToolPermission {
+  return mark !== undefined && STRICTNESS[mark] > STRICTNESS[base] ? mark : base
+}
+
 export interface AgentRunnerOptions {
   tools?: ToolSet
   system?: string
@@ -131,15 +138,17 @@ export class AgentRunner {
   }
 
   /**
-   * The manifest's permission, then the one the registry put on the tool. Without either, an MCP tool is `deny`
-   * (fail-closed), and other tools get the default.
+   * The manifest's permission. Without one, an MCP tool is `deny` (fail-closed) and other tools get the default;
+   * a permission the registry put on the tool can make that stricter (`ask`), never looser, so a marked tool
+   * cannot get past a runner that denies by default.
    */
   private permissionFor(toolName: string, tool: unknown): ToolPermission {
     const own = Object.hasOwn(this.config.permissions, toolName)
       ? this.config.permissions[toolName]
       : undefined
     if (own !== undefined) return own
-    return permissionMarkOf(tool) ?? (isMcpTool(tool) ? 'deny' : (this.defaultOptions.defaultToolPermission ?? 'allow'))
+    const base: ToolPermission = isMcpTool(tool) ? 'deny' : (this.defaultOptions.defaultToolPermission ?? 'allow')
+    return stricterOf(base, permissionMarkOf(tool))
   }
 
   /**

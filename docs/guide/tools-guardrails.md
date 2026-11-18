@@ -55,7 +55,7 @@ A permission is looked up in the agent's matrix (`setAgentPermissions`), then th
 
 > [!IMPORTANT]
 > The registry operates on a **deny-by-default** model (`defaultPermission: 'deny'`): tools without a permission cannot run.
-> Tools the registry hands out carry the permission it resolved for them, and `AiManager` and `AgentRunner` read it. Precedence for a call: an entry in `toolPermissions` (or the agent manifest), then the tool's own permission, then `deny` for an MCP tool, then `allow`. MCP tools carry no permission, so pass `toolPermissions` with them.
+> Tools from `getToolsWithApprovals()` carry the permission the registry resolved for them. `AiManager` reads it: an entry in `toolPermissions` wins, then the tool's own permission, then `deny` for an MCP tool, then `allow`. `AgentRunner` lets it tighten its default (`ask`), never loosen it: a runner with `defaultToolPermission: 'deny'`, such as a sub-agent, still drops a tool its manifest does not list.
 
 ```ts
 const { tools } = registry.getToolsWithApprovals('support-bot')
@@ -98,7 +98,7 @@ const guarded = registry.getToolsForAgent('support-bot', {
 - `check()` reserves a call slot, so parallel tool calls cannot all pass `maxCalls` at once.
 
 > [!WARNING]
-> Tools from `getToolsForAgent()` and `getToolsByList()` already carry the registry's `ask` wrapper and are marked `allow`, so the manager confirms them once. Do not mark them `ask` in `toolPermissions` as well; use `getToolsWithApprovals()` for resumable approvals.
+> Tools from `getToolsForAgent()` and `getToolsByList()` already carry the registry's `ask` wrapper and no permission mark, so the manager confirms them once. Do not mark them `ask` in `toolPermissions` as well, and do not pass them to an `AgentRunner` with `defaultToolPermission: 'ask'` (it would ask a second time); use `getToolsWithApprovals()` for resumable approvals.
 
 ---
 

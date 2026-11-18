@@ -348,9 +348,12 @@ export class ToolRegistry {
       )
     }
 
-    // The wrapper enforces `ask` here, so the mark is `allow`: the manager must not confirm a second time.
-    const handedOut = permission === 'allow' && !options.guard ? tool : this.wrapTool(name, tool, { ...options, permission })
-    return this.marked(handedOut, 'allow')
+    // No mark here: the wrapper enforces `ask` itself, and an unmarked tool is `allow` for the manager.
+    if (permission === 'allow' && !options.guard) {
+      return tool
+    }
+
+    return this.wrapTool(name, tool, { ...options, permission })
   }
 
   /**

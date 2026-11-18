@@ -51,12 +51,14 @@ test.group('permission mark', () => {
     assert.isUndefined(permissionMarkOf(fixture.tools.danger))
   })
 
-  test('getToolsForAgent and getToolsByList mark allow, the wrapper enforces the real permission', ({ assert }) => {
+  test('getToolsForAgent and getToolsByList put no mark: their wrapper enforces the permission', ({ assert }) => {
     const { registry } = registryWithDanger()
-    const options = { permissions: { danger: 'ask' as const } }
 
-    assert.equal(permissionMarkOf(registry.getToolsForAgent('agent', options).danger), 'allow')
-    assert.equal(permissionMarkOf(registry.getToolsByList(['danger'], options).danger), 'allow')
+    for (const permission of ['allow', 'ask'] as const) {
+      const options = { permissions: { danger: permission } }
+      assert.isUndefined(permissionMarkOf(registry.getToolsForAgent('agent', options).danger))
+      assert.isUndefined(permissionMarkOf(registry.getToolsByList(['danger'], options).danger))
+    }
   })
 
   test('an MCP tool from the registry carries no permission mark', ({ assert }) => {
@@ -124,27 +126,9 @@ test.group('permission mark', () => {
     assert.lengthOf(fixture.inputs.danger, 0)
   })
 
-  test("AgentRunner with defaultToolPermission 'ask' confirms a registry ask tool once", async ({ assert }) => {
-    const { registry, fixture } = registryWithDanger()
-    const ai = managerFor(fakeModel(askOnce()))
-    const confirmation = ai.getConfirmationService()
-    const created: string[] = []
-    confirmation.onActionCreated((action) => {
-      created.push(action.id)
-      confirmation.approve(action.id)
-    })
-    const tools = registry.getToolsForAgent('agent', { permissions: { danger: 'ask' }, confirmation, timeoutMs: 1000 })
-    const runner = new AgentRunner(ai, agentConfig({}), { defaultToolPermission: 'ask' })
-
-    await runner.run({ prompt: 'run it', tools: tools as never })
-
-    assert.lengthOf(created, 1)
-    assert.lengthOf(fixture.inputs.danger, 1)
-  })
-
   test('a manifest entry wins over the mark', async () => {
     const { registry } = registryWithDanger()
-    const tools = registry.getToolsByList(['danger'], { permissions: { danger: 'allow' } })
+    const { tools } = registry.getToolsWithApprovals('agent', { permissions: { danger: 'allow' } })
     const model = fakeModel([{ text: 'ok' }])
     const runner = new AgentRunner(managerFor(model), agentConfig({ danger: 'deny' }))
 
@@ -153,14 +137,25 @@ test.group('permission mark', () => {
     model.assertToolNotOffered('danger')
   })
 
-  test('the mark wins over defaultToolPermission', async () => {
+  test('an allow mark does not loosen a runner that denies by default', async () => {
     const { registry } = registryWithDanger()
-    const tools = registry.getToolsByList(['danger'], { permissions: { danger: 'allow' } })
+    const { tools } = registry.getToolsWithApprovals('agent', { permissions: { danger: 'allow' } })
     const model = fakeModel([{ text: 'ok' }])
     const runner = new AgentRunner(managerFor(model), agentConfig({}), { defaultToolPermission: 'deny' })
 
     await runner.run({ prompt: 'run it', tools: tools as never })
 
-    model.assertToolOffered('danger')
+    model.assertToolNotOffered('danger')
+  })
+
+  test('a registry tool outside a strict manifest is not offered', async () => {
+    const { registry } = registryWithDanger()
+    const tools = registry.getToolsForAgent('agent', { permissions: { danger: 'allow' } })
+    const model = fakeModel([{ text: 'ok' }])
+    const runner = new AgentRunner(managerFor(model), agentConfig({}), { defaultToolPermission: 'deny' })
+
+    await runner.run({ prompt: 'run it', tools: tools as never })
+
+    model.assertToolNotOffered('danger')
   })
 })

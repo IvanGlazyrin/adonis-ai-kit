@@ -17,7 +17,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `fallbackOnCredentialErrors` option on model-chain calls and in `AiConfig` (default `true`).
 - `budget.sink` and `budget.maxRecords` in `AiConfig`: the manager passes them to the `CostTracker` it creates, so cost records can be persisted and memory bounded from `config/ai.ts`. The sink may be async; it is never awaited, and a throw or a rejection is logged with `warn`. `CostTrackerOptions.sink` accepts an async function too.
 - `normalizeUsage`, `sumUsage` and `EMPTY_USAGE` are exported from `adonis-ai-kit`.
-- `TOOL_PERMISSION` and `permissionMarkOf` (from `adonis-ai-kit` and `adonis-ai-kit/guard`): `ToolRegistry` puts the permission it resolved on a copy of each tool it hands out (an MCP tool excepted), and `AiManager` and `AgentRunner` read it. Precedence: an entry in `toolPermissions` or the agent manifest, then the mark, then `deny` for an MCP tool, then `allow`. `getToolsWithApprovals()` marks the real permission; `getToolsForAgent()` and `getToolsByList()` mark `allow`, because their `ask` wrapper already confirms the call.
+- `TOOL_PERMISSION` and `permissionMarkOf` (from `adonis-ai-kit` and `adonis-ai-kit/guard`): `ToolRegistry.getToolsWithApprovals()` puts the permission it resolved on a copy of each tool it returns (an MCP tool excepted). `AiManager` reads it: an entry in `toolPermissions`, then the mark, then `deny` for an MCP tool, then `allow`. `AgentRunner` lets a mark tighten its default, never loosen it, so a runner that denies by default (a sub-agent) still drops tools its manifest does not list. `getToolsForAgent()` and `getToolsByList()` put no mark: their wrapper already enforces the permission.
 
 ### Changed
 
