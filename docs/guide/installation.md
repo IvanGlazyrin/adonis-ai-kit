@@ -109,3 +109,14 @@ The `commands` entry adds `ai:test` and `make:ai-agent` to Ace (see [CLI](./cli.
 1. **IoC Container Singleton:** Binds the `ai` service (`AiManager`) to the AdonisJS container under the `'ai'` key.
 2. **HTTP Response Macro:** Installs the `response.streamAI()` macro on the HTTP response object for seamless Server-Sent Events (SSE) streaming.
 3. **Graceful Application Shutdown:** Hooks into application shutdown (`ai.shutdown()`) to stop ACP coding agent child processes, settle pending confirmations as not approved, and close MCP clients.
+
+## Using the kit without the HTTP layer
+
+`adonis-ai-kit/core` exports everything except the `response.streamAI()` macro and the `configure` hook: the manager,
+models, guards, budget, catalog, agents, MCP and approvals. Use it in a worker, a script, or another library that builds
+on the kit. Outside an AdonisJS process, default folders (`resources/agent-configs`, `storage/models`) resolve under the
+working directory.
+
+```ts
+import { AiManager, defineConfig } from 'adonis-ai-kit/core'
+```

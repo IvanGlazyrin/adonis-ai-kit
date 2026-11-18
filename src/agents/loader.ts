@@ -5,6 +5,7 @@ import type { z } from 'zod'
 import type { Logger } from '../logger.js'
 import { agentManifestSchema, type AgentManifest, type ToolPermission } from './manifest.js'
 import { LOAD_SKILL_TOOL } from './skill_tool.js'
+import { hostPath } from '../host_paths.js'
 
 const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 
@@ -21,30 +22,6 @@ function realPathInside(dir: string, file: string): string | null {
 /** The directory path with a trailing separator, so a prefix test does not match a sibling (`skills` vs `skills2`). */
 function withSeparator(dir: string): string {
   return dir.endsWith(path.sep) ? dir : dir + path.sep
-}
-
-interface AppPaths {
-  makePath(relative: string): string
-}
-
-/** The AdonisJS app service, or `null` when this code runs outside an AdonisJS process. */
-async function loadAdonisApp(): Promise<AppPaths | null> {
-  try {
-    const { default: app } = await import('@adonisjs/core/services/app')
-    return app
-  } catch {
-    return null
-  }
-}
-
-/** A default folder under the app root, or under the working directory when no app is available. */
-function defaultDir(app: AppPaths | null, relative: string): string {
-  try {
-    if (app) return app.makePath(relative)
-  } catch {
-    // the app is not booted: use the working directory instead
-  }
-  return path.resolve(process.cwd(), relative)
 }
 
 /** Strips a UTF-8 BOM and normalizes line endings so the frontmatter regex always matches. */
@@ -194,10 +171,9 @@ export class AgentLoader {
       return { configsDir, skillsDir }
     }
 
-    const app = await loadAdonisApp()
     return {
-      configsDir: configsDir || defaultDir(app, 'resources/agent-configs'),
-      skillsDir: skillsDir || defaultDir(app, 'resources/agent-skills'),
+      configsDir: configsDir || (await hostPath('resources/agent-configs')),
+      skillsDir: skillsDir || (await hostPath('resources/agent-skills')),
     }
   }
 

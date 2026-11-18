@@ -3,6 +3,12 @@
 All notable changes to `adonis-ai-kit` are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- `adonis-ai-kit/core`: every export except the `response.streamAI()` macro and the `configure` hook, for workers, scripts and libraries that build on the kit. Outside an AdonisJS process, default folders resolve under the working directory, as before.
+
 ## [1.4.0] - 2026-11-18
 
 ### Added

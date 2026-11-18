@@ -11,6 +11,7 @@ import type {
   ModelsDevModelCost,
   ModelsDevProvider,
 } from './models_dev.js'
+import { hostPath } from '../host_paths.js'
 
 export interface ModelsDevLoadOptions {
   preferCache?: boolean
@@ -467,13 +468,8 @@ export class ModelsDevSource {
   }
 
   /** The models.dev file under the app's storage folder, or under the working directory outside an app. */
-  async #defaultCachePath(): Promise<string> {
-    try {
-      const { default: app } = await import('@adonisjs/core/services/app')
-      return app.makePath('storage', 'models', 'models.dev.json')
-    } catch {
-      return path.resolve(process.cwd(), 'storage', 'models', 'models.dev.json')
-    }
+  #defaultCachePath(): Promise<string> {
+    return hostPath('storage', 'models', 'models.dev.json')
   }
 
   #loadSource(
