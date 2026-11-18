@@ -76,6 +76,9 @@ import type {
 } from './types.js'
 
 import type { Logger } from './logger.js'
+import { CallEvents, deliverEvent, observerSink } from './call_events.js'
+import type { AiObserver } from './events/types.js'
+import { toolCallsOf } from './events/tool_calls.js'
 
 /** @deprecated Use Logger */
 export type LoggerContract = Logger
@@ -94,6 +97,8 @@ interface AttemptState {
    * after the step, so the model cannot start the same agent again, and the call then fails with it.
    */
   acpCallFailed?: AcpCallFailedError
+  /** Told about every step this attempt finishes, after its usage is recorded. Set when the call has events. */
+  onStep?: (step: StepResult<ToolSet>) => void
 }
 
 interface AttemptContext {
@@ -124,6 +129,8 @@ type ChainRequest = ModelChainCallOptions & {
   model?: string
   agentName?: string
   abortSignal?: AbortSignal
+  /** The call's events: attempts, steps and fallbacks are reported here. */
+  events?: CallEvents
 }
 
 /** `ResolvedModel` entries keep their order; strings become `ref` candidates. Same dedupe rules as `buildChainCandidates`. */
@@ -457,6 +464,11 @@ export interface AiManagerOptions {
    * failures. Default: a new breaker built from `config.circuitBreaker`.
    */
   circuitBreaker?: CircuitBreaker
+  /**
+   * Receives the lifecycle events of every call (see `AiEvent`). The service provider passes one that forwards them
+   * to the AdonisJS emitter as `ai:<type>`.
+   */
+  observer?: AiObserver
 }
 
 /** Whether a value is a logger (it has an `info` method) rather than an options object. */
@@ -499,6 +511,7 @@ export class AiManager {
   private conversationService?: Conversations
   private approvalSecret?: ApprovalSecret
   private mcpTools?: McpTools
+  private observer?: AiObserver
 
   constructor(config: AiConfig, options?: AiManagerOptions)
   /** @deprecated Pass the services as an options object: `new AiManager(config, { logger, costTracker, ... })`. */
@@ -513,8 +526,9 @@ export class AiManager {
     mcp?: McpTools
   )
   constructor(config: AiConfig, ...rest: unknown[]) {
-    const { logger, costTracker, toolRegistry, catalog, agentLoader, confirmation, mcp, circuitBreaker } =
+    const { logger, costTracker, toolRegistry, catalog, agentLoader, confirmation, mcp, circuitBreaker, observer } =
       managerOptionsOf(rest)
+    this.observer = observer
     // The secret is kept as an ApprovalSecret, which redacts itself, so `getConfig()` never shows it in clear.
     this.approvalSecret = approvalSecretOf(config)
     this.config =
@@ -522,7 +536,7 @@ export class AiManager {
         ? { ...config, approvals: { ...config.approvals, secret: this.approvalSecret } }
         : config
     this.logger = logger
-    this.circuitBreaker = circuitBreaker ?? new CircuitBreaker(config.circuitBreaker)
+    this.circuitBreaker = circuitBreaker ?? new CircuitBreaker(this.breakerConfigOf(config))
     this.costTracker =
       costTracker ??
       new CostTracker({
@@ -541,6 +555,22 @@ export class AiManager {
 
   getConfig(): AiConfig {
     return this.config
+  }
+
+  /** The configured breaker settings, with state changes also reported as `breaker:state` events. */
+  private breakerConfigOf(config: AiConfig): AiConfig['circuitBreaker'] {
+    return {
+      ...config.circuitBreaker,
+      onStateChange: (key, from, to) => {
+        deliverEvent({ type: 'breaker:state', key, from, to }, [observerSink(this.observer)], this.logger)
+        config.circuitBreaker?.onStateChange?.(key, from, to)
+      },
+    }
+  }
+
+  /** The events of a new call, sent to the call's `onEvent` and to the manager's observer. */
+  private callEventsFor(options: { agentName?: string; onEvent?: GenerateTextOptions['onEvent'] }): CallEvents {
+    return new CallEvents(this.agentNameOf(options), [options.onEvent, observerSink(this.observer)], this.logger)
   }
 
   getCircuitBreaker(): CircuitBreaker {
@@ -580,7 +610,7 @@ export class AiManager {
       store: this.config.conversations?.store,
       logger: this.logger,
       now: () => this.approvalNow(),
-      runner: { generate: (options, resume) => this.generateTextTurn(options, resume) },
+      runner: { generate: (options, resume) => this.observedTextTurn(options, resume) },
     }))
   }
 
@@ -786,7 +816,7 @@ export class AiManager {
       try {
         attempt = await this.prepareAttempt(providerName, pConfig, index === 0, target.model)
       } catch (err) {
-        this.recordFailedAttempt(attempts, { err, request, providerName, modelName: UNRESOLVED_MODEL, breakerKey: providerName, state })
+        this.recordFailedAttempt(attempts, { err, request, providerName, modelName: UNRESOLVED_MODEL, breakerKey: providerName, state, next: cascade[index + 1] })
         continue
       }
 
@@ -801,7 +831,7 @@ export class AiManager {
         const result = await this.attemptProvider(request, attempt, state, attemptOperation)
         return { result, provider: providerName, model: modelName }
       } catch (err) {
-        this.recordFailedAttempt(attempts, { err, request, providerName, modelName, breakerKey, state })
+        this.recordFailedAttempt(attempts, { err, request, providerName, modelName, breakerKey, state, next: cascade[index + 1] })
       }
     }
 
@@ -827,9 +857,11 @@ export class AiManager {
       modelName: string
       breakerKey: string
       state: AttemptState
+      /** The provider tried next, if any. */
+      next?: string
     }
   ): void {
-    const { err, request, providerName, modelName, breakerKey, state } = failure
+    const { err, request, providerName, modelName, breakerKey, state, next } = failure
     const classification = classifyError(err, request.abortSignal)
     const acp = this.config.providers[providerName]?.driver === 'acp'
     this.assertCanFallBack(err, classification.kind, state, breakerKey, acp)
@@ -839,6 +871,9 @@ export class AiManager {
     this.logger?.warn?.(
       `[AiManager] "${breakerKey}" failed (${classification.reason}: ${error.message}). Attempting next fallback...`
     )
+    if (next !== undefined) {
+      request.events?.emit({ type: 'fallback', from: breakerKey, to: next, errorClass: classification.errorClass })
+    }
   }
 
   /**
@@ -941,6 +976,21 @@ export class AiManager {
   ): (ctx: AttemptContext) => Promise<T> {
     return async (ctx) => {
       const startTime = Date.now()
+      const events = request.events
+      if (events) {
+        events.emit({ type: 'attempt:started', provider: ctx.providerName, model: ctx.modelName, breakerKey: ctx.breakerKey })
+        let stepNumber = 0
+        ctx.state.onStep = (step) =>
+          events.emit({
+            type: 'step:finished',
+            provider: ctx.providerName,
+            model: ctx.modelName,
+            stepNumber: stepNumber++,
+            toolCalls: toolCallsOf(step),
+            usage: normalizeUsage(step.usage),
+            finishReason: step.finishReason ?? 'stop',
+          })
+      }
       try {
         const value = await operation(ctx)
         // A tool that ran an ACP agent stopped the run; the call fails with that error, not with its partial result.
@@ -1007,7 +1057,10 @@ export class AiManager {
         breaker: this.circuitBreaker,
         resolver: this.config.resolver,
         abortSignal: request.abortSignal,
-        onFallback: request.onFallback,
+        onFallback: (event) => {
+          request.events?.emit({ type: 'fallback', from: event.fromModel, to: event.toModel, errorClass: event.errorClass })
+          return request.onFallback?.(event)
+        },
         logger: this.logger,
         alsoFallBackOn: this.fallsBackOnCredentialErrors(request) ? CREDENTIAL_ERROR_CLASSES : undefined,
       }
@@ -1201,11 +1254,13 @@ export class AiManager {
       prepareStep: this.prepareStepOf(options.prepareStep),
       providerOptions: options.providerOptions,
       repairToolCall: options.repairToolCall,
+      telemetry: options.telemetry,
       stopWhen: stopConditionsOf(options, state),
       maxRetries: options.maxRetries,
       onToolExecutionStart: sideEffects.onToolExecutionStart,
       onStepEnd: async (step: StepResult<ToolSet>) => {
         sideEffects.onStepEnd(step)
+        state.onStep?.(step)
         if (!options.onStepFinish) return
         try {
           await options.onStepFinish(step)
@@ -1290,14 +1345,39 @@ export class AiManager {
    * Generates text using the configured LLM provider with fallback, budget accounting, and tool guard.
    */
   async generateText(options: GenerateTextOptions): Promise<GenerateTextResult> {
-    return this.generateTextTurn(options)
+    return this.observedTextTurn(options)
+  }
+
+  /** A text turn with its call events: `call:started`, then exactly one `call:completed` or `call:failed`. */
+  private async observedTextTurn(options: GenerateTextOptions, resume?: ResumeContext): Promise<GenerateTextResult> {
+    const events = this.callEventsFor(options)
+    events.started('text', options.metadata)
+    try {
+      const result = await this.generateTextTurn(options, resume, events)
+      events.completed({
+        provider: result.provider,
+        model: result.model,
+        usage: result.usage,
+        costUsd: result.costUsd,
+        finishReason: result.finishReason,
+        status: result.status,
+      })
+      return result
+    } catch (err) {
+      events.failed(err)
+      throw err
+    }
   }
 
   /**
    * `generateText` for a call, or for the call that continues a paused step (`resume`, from `ai.conversations`).
    * A `resumable` run that stops at an approval stores its state and returns `status: 'awaiting-approval'`.
    */
-  private async generateTextTurn(options: GenerateTextOptions, resume?: ResumeContext): Promise<GenerateTextResult> {
+  private async generateTextTurn(
+    options: GenerateTextOptions,
+    resume?: ResumeContext,
+    events?: CallEvents
+  ): Promise<GenerateTextResult> {
     assertPromptIsString(options.prompt)
     if (!resume) assertNoApprovalParts(options.messages)
     const agentName = this.agentNameOf(options)
@@ -1320,7 +1400,8 @@ export class AiManager {
       callOptions,
       options.schema ? Output.object({ schema: options.schema }) : undefined,
       (done) => ({ finishReason: done.finishReason, ...options.metadata }),
-      approval
+      approval,
+      events
     ).catch(async (err: unknown) => {
       if (resume && turn && err instanceof ApprovalSignatureError) await this.closeApprovalStep(turn, resume.run)
       throw err
@@ -1397,6 +1478,18 @@ export class AiManager {
    * Token usage is recorded when the stream ends or is aborted.
    */
   async streamText(options: StreamTextOptions): Promise<StreamTextResult> {
+    const events = this.callEventsFor(options)
+    events.started('stream', options.metadata)
+    try {
+      return await this.streamTextCall(options, events)
+    } catch (err) {
+      events.failed(err)
+      throw err
+    }
+  }
+
+  /** `streamText` without the call's start and early-failure events. The stream reports how it ended. */
+  private async streamTextCall(options: StreamTextOptions, events: CallEvents): Promise<StreamTextResult> {
     validatePromptCache(options)
     assertPromptIsString(options.prompt)
     assertNoApprovalParts(options.messages)
@@ -1423,7 +1516,7 @@ export class AiManager {
     })
 
     const { result: raw, provider, model } = await this.executeWithFallback(
-      { ...callOptions, abortSignal: signal },
+      { ...callOptions, abortSignal: signal, events },
       async ({ getModel, modelName, providerName, breakerKey, state, acp }) => {
         const pricingReady = this.warmPricing(providerName, modelName)
         const languageModel = withJsonRecovery(await getModel(), callOptions, acp)
@@ -1439,7 +1532,9 @@ export class AiManager {
           finishReason?: string,
           extraMetadata: Record<string, unknown> = {},
           completedMessages?: ModelMessage[],
-          commitState?: ReturnType<typeof asJson>
+          commitState?: ReturnType<typeof asJson>,
+          /** Runs last, once the cost is known: reports how the call ended. */
+          settled?: (costUsd: number | undefined) => void
         ): void => {
           if (attemptFailed || accounted) return
           accounted = true
@@ -1470,6 +1565,7 @@ export class AiManager {
             } catch (err) {
               this.logger?.warn?.(`[AiManager] onFinish callback failed: ${String(err)}`)
             }
+            settled?.(costUsd)
           })()
         }
 
@@ -1488,10 +1584,15 @@ export class AiManager {
               this.circuitBreaker.recordFailure(breakerKey, error)
             }
             // The steps that finished before the error still consumed tokens.
-            finish(sumUsage(state.stepUsages), '', undefined, {
-              failed: true,
-              errorClass: classification.errorClass,
-            })
+            finish(
+              sumUsage(state.stepUsages),
+              '',
+              undefined,
+              { failed: true, errorClass: classification.errorClass },
+              undefined,
+              undefined,
+              () => events.failed(error)
+            )
           },
           onEnd: (event) => {
             streamResponseMessages = event.responseMessages
@@ -1500,16 +1601,29 @@ export class AiManager {
               status: pending.length > 0 ? 'awaiting-approval' : 'completed',
               pendingApprovals: pending.length > 0 ? pendingViews(event.responseMessages, pending) : [],
             }
+            const totalUsage = normalizeUsage(event.totalUsage)
             finish(
-              normalizeUsage(event.totalUsage),
+              totalUsage,
               event.text,
               event.finishReason,
               {},
               event.responseMessages,
-              pending.length > 0 ? asJson({ approvals: pending }) : undefined
+              pending.length > 0 ? asJson({ approvals: pending }) : undefined,
+              (costUsd) =>
+                events.completed({
+                  provider: providerName,
+                  model: modelName,
+                  usage: totalUsage,
+                  costUsd,
+                  finishReason: event.finishReason ?? 'stop',
+                  status: streamOutcome.status,
+                })
             )
           },
-          onAbort: (event) => finish(sumUsage(event.steps.map((s) => s.usage)), ''),
+          onAbort: (event) =>
+            finish(sumUsage(event.steps.map((s) => s.usage)), '', undefined, {}, undefined, undefined, () =>
+              events.failed(Object.assign(new Error('Generation aborted'), { name: 'AbortError' }))
+            ),
         } as StreamCallParams)
 
         // Wait for the first meaningful part so early provider errors reject this attempt.
@@ -1577,6 +1691,30 @@ export class AiManager {
    * (via `generateText` with `Output.object`, as `generateObject` is deprecated in AI SDK v7).
    */
   async generateObject<T>(options: GenerateObjectOptions<T>): Promise<GenerateObjectResult<T>> {
+    const events = this.callEventsFor(options)
+    events.started('object')
+    try {
+      const generated = await this.generateObjectCall(options, events)
+      events.completed({
+        provider: generated.provider,
+        model: generated.model,
+        usage: generated.usage,
+        costUsd: generated.costUsd,
+        finishReason: generated.finishReason,
+        status: 'completed',
+      })
+      const { finishReason: _finishReason, ...result } = generated
+      return result
+    } catch (err) {
+      events.failed(err)
+      throw err
+    }
+  }
+
+  private async generateObjectCall<T>(
+    options: GenerateObjectOptions<T>,
+    events: CallEvents
+  ): Promise<GenerateObjectResult<T> & { finishReason: string }> {
     assertPromptIsString(options.prompt)
     assertNoApprovalParts(options.messages)
     const { result, provider, model, usage, durationMs, costUsd } = await this.generateAndRecord(
@@ -1587,10 +1725,13 @@ export class AiManager {
         name: options.schemaName,
         description: options.schemaDescription,
       }),
-      () => ({ mode: 'structured_object' })
+      () => ({ mode: 'structured_object' }),
+      undefined,
+      events
     )
 
     return {
+      finishReason: result.finishReason ?? 'stop',
       object: result.output as T,
       usage,
       costUsd,
@@ -1615,12 +1756,13 @@ export class AiManager {
     options: GenerateTextOptions,
     output: ReturnType<typeof Output.object> | undefined,
     costMetadata: (result: TextCallResult) => Record<string, unknown>,
-    approval?: ApprovalContext
+    approval?: ApprovalContext,
+    events?: CallEvents
   ) {
     validatePromptCache(options)
     const startTime = Date.now()
     const { result, provider, model } = await this.executeWithFallback(
-      options,
+      { ...options, events },
       async ({ getModel, modelName, providerName, state, acp }) => {
         void this.warmPricing(providerName, modelName)
         const languageModel = withJsonRecovery(await getModel(), options, acp)

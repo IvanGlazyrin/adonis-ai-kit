@@ -9,6 +9,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `adonis-ai-kit/core`: every export except the `response.streamAI()` macro and the `configure` hook, for workers, scripts and libraries that build on the kit. Outside an AdonisJS process, default folders resolve under the working directory, as before.
 - `new AiManager(config, options)`: the services the manager uses instead of creating its own (`logger`, `costTracker`, `toolRegistry`, `catalog`, `agentLoader`, `confirmation`, `mcp`) as one object, plus `circuitBreaker`, so code that runs `runModelChain` itself can share the manager's breaker. `AiManagerOptions` is exported.
+- Call events: every `generateText`, `streamText` and `generateObject` call reports `call:started`, `attempt:started`, `step:finished`, `fallback` and then exactly one `call:completed` or `call:failed`; a breaker the manager builds reports `breaker:state`. Receive them per call with `onEvent`, or for every call with `new AiManager(config, { observer })`. The service provider forwards them to the AdonisJS emitter as `ai:<type>`, typed in `EventsList`. A handler that throws or rejects is logged and never fails the call. See `docs/guide/observability.md`.
+- `adonis-ai-kit/events`: the `AiEvent` types, `emitterObserver(emitter)` and `EventBuffer`, a bounded queue that holds events until a sink is attached (moved here from optimus-grid's `EventTracker`).
+- `telemetry` option on `generateText`, `streamText` and `generateObject`: passed to the AI SDK as is.
 
 ### Deprecated
 

@@ -96,6 +96,7 @@ Each line links to its page in the guide.
 - [ACP coding agents](docs/guide/acp-agents.md): Claude Code, opencode and other agents as child processes with a sanitized environment.
 - [Agents and skills](docs/guide/agents.md): Markdown manifests, on-demand skills, sub-agents.
 - [Step control and prompt cache](docs/guide/step-control-and-cache.md): `prepareStep`, `stopWhen`, Anthropic cache breakpoints, JSON recovery.
+- [Events and observability](docs/guide/observability.md): call lifecycle events, `ai:*` emitter events, AI SDK telemetry.
 - [Token budget and cost](docs/guide/budget-and-cost.md): `CostTracker`, cost sink, `BudgetEnforcer`, `stopOnBudget`.
 - [Model catalog](docs/guide/catalog.md): live pricing and limits from models.dev.
 - [Testing](docs/guide/testing.md): `adonis-ai-kit/testing` fakes for models, tools and failures.

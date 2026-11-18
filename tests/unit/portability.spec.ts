@@ -9,7 +9,8 @@ const ADONIS_ALLOWED = ['host_paths.ts', 'response_macro.ts', `lucid${sep}`]
 
 /** Folders that must import only from themselves (plus the listed shared files), so they can be copied out. */
 const SELF_CONTAINED: Record<string, string[]> = {
-  events: ['../logger.js', '../types.js'],
+  // ErrorClass is a type-only import: copying the folder elsewhere needs that one union type.
+  events: ['../logger.js', '../types.js', '../error_classifier.js'],
   budget: ['../logger.js', '../types.js'],
 }
 

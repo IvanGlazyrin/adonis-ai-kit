@@ -6,6 +6,7 @@ import type {
   StepResult,
   StopCondition,
   StreamTextResult as AiStreamTextResult,
+  TelemetryOptions,
   TextStreamPart,
   ToolCallRepairFunction,
   ToolSet,
@@ -20,6 +21,7 @@ import type { LanguageModelSource, ResolvedModel } from './models/types.js'
 import type { ConversationCallOptions, ConversationStore } from './conversations/types.js'
 import type { ApprovalSecret } from './approvals/secret.js'
 import type { McpConfig } from './mcp/types.js'
+import type { AiEvent } from './events/types.js'
 import type { ApprovalMode, PendingApproval } from './approvals/types.js'
 
 export type CircuitBreakerState = 'closed' | 'open' | 'half_open'
@@ -391,6 +393,13 @@ export interface GenerateTextOptions extends ModelChainCallOptions {
    * `approvals.secret`. Default: the config's `approvals.mode`, else `blocking`.
    */
   approvals?: ApprovalMode
+  /**
+   * Receives this call's lifecycle events (`call:started`, `attempt:started`, `step:finished`, `fallback`, then one
+   * `call:completed` or `call:failed`). A throw or a rejected promise is logged and does not fail the call.
+   */
+  onEvent?: (event: AiEvent) => void | Promise<void>
+  /** AI SDK telemetry settings (`telemetry`), passed through as is. */
+  telemetry?: TelemetryOptions
 }
 
 export interface GenerateTextResult {
@@ -471,6 +480,10 @@ export interface GenerateObjectOptions<T> extends ModelChainCallOptions {
   abortSignal?: AbortSignal
   /** Strips prose around the JSON answer before parsing (see `extractFirstJsonValue`). Off by default. */
   jsonRecovery?: boolean
+  /** Receives this call's lifecycle events; see `GenerateTextOptions.onEvent`. */
+  onEvent?: (event: AiEvent) => void | Promise<void>
+  /** AI SDK telemetry settings (`telemetry`), passed through as is. */
+  telemetry?: TelemetryOptions
 }
 
 export interface GenerateObjectResult<T> {
