@@ -22,6 +22,7 @@ import type { ConversationCallOptions, ConversationStore } from './conversations
 import type { ApprovalSecret } from './approvals/secret.js'
 import type { McpConfig } from './mcp/types.js'
 import type { AiEvent } from './events/types.js'
+import type { CallBudget } from './budget/call_budget.js'
 import type { ApprovalMode, PendingApproval } from './approvals/types.js'
 
 export type CircuitBreakerState = 'closed' | 'open' | 'half_open'
@@ -132,6 +133,11 @@ export interface BudgetConfig {
   maxCostPerRequestUsd?: number
   defaultAgentName?: string
   pricing?: Record<string, ModelPricing>
+  /**
+   * Stop the tool loop after the step that goes over `maxTokensPerRequest` or `maxCostPerRequestUsd`, instead of
+   * only logging a warning. Default: false.
+   */
+  enforce?: boolean
   /**
    * Called for every cost record, e.g. to persist it to a database. It may be async, but it is
    * never awaited; a thrown error or a rejection is logged and never fails the call.
@@ -400,6 +406,11 @@ export interface GenerateTextOptions extends ModelChainCallOptions {
   onEvent?: (event: AiEvent) => void | Promise<void>
   /** AI SDK telemetry settings (`telemetry`), passed through as is. */
   telemetry?: TelemetryOptions
+  /**
+   * Checks the call against a `BudgetEnforcer` before the model is called (`BudgetExceededError` when nothing is
+   * left), stops the tool loop when the budget runs out, and charges the call's tokens and cost to it.
+   */
+  budget?: CallBudget
 }
 
 export interface GenerateTextResult {
@@ -484,6 +495,8 @@ export interface GenerateObjectOptions<T> extends ModelChainCallOptions {
   onEvent?: (event: AiEvent) => void | Promise<void>
   /** AI SDK telemetry settings (`telemetry`), passed through as is. */
   telemetry?: TelemetryOptions
+  /** Checks and charges the call against a `BudgetEnforcer`; see `GenerateTextOptions.budget`. */
+  budget?: CallBudget
 }
 
 export interface GenerateObjectResult<T> {

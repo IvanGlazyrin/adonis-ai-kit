@@ -47,7 +47,8 @@ export class CascadingFallbackError extends AiException {
 }
 
 /**
- * Thrown when token or cost budget thresholds are exceeded.
+ * Thrown when token or cost budget thresholds are exceeded. A call whose `budget` has nothing left throws it before
+ * any model is called, with `{ agentName, summary }` (the enforcer's `getSummary()`) as `currentUsage`.
  */
 export class BudgetExceededError extends AiException {
   constructor(message: string, public currentUsage?: unknown) {

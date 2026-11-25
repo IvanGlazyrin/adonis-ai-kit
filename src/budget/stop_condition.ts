@@ -30,20 +30,31 @@ export function stopOnBudget(
   options: StopOnBudgetOptions = {}
 ): StopCondition<ToolSet> {
   return ({ steps }: { steps: Array<StepResult<ToolSet>> }) => {
-    let tokens = options.extra?.tokens() ?? 0
-    let costUsd = options.extra?.costUsd() ?? 0
-    for (const step of steps) {
-      const input = step.usage.inputTokens ?? 0
-      const output = step.usage.outputTokens ?? 0
-      tokens += step.usage.totalTokens ?? input + output
-      costUsd += costTracker.calculateCost(step.model.modelId, input, output, {
-        cacheReadTokens: step.usage.inputTokenDetails?.cacheReadTokens ?? 0,
-        cacheWriteTokens: step.usage.inputTokenDetails?.cacheWriteTokens ?? 0,
-        reasoningTokens: step.usage.outputTokenDetails?.reasoningTokens ?? 0,
-      })
-    }
+    const spend = loopSpend(steps, costTracker)
+    const tokens = (options.extra?.tokens() ?? 0) + spend.tokens
+    const costUsd = (options.extra?.costUsd() ?? 0) + spend.costUsd
     if (limits.maxTokens !== undefined && tokens > limits.maxTokens) return true
     if (limits.maxCostUsd !== undefined && costUsd > limits.maxCostUsd) return true
     return false
   }
+}
+
+/**
+ * Tokens and USD the finished steps of a tool loop used. Tokens are summed from each step's usage; cost is priced per
+ * step by the model that ran it, with the cost tracker's pricing table.
+ */
+export function loopSpend(steps: Array<StepResult<ToolSet>>, costTracker: CostTracker): { tokens: number; costUsd: number } {
+  let tokens = 0
+  let costUsd = 0
+  for (const step of steps) {
+    const input = step.usage.inputTokens ?? 0
+    const output = step.usage.outputTokens ?? 0
+    tokens += step.usage.totalTokens ?? input + output
+    costUsd += costTracker.calculateCost(step.model.modelId, input, output, {
+      cacheReadTokens: step.usage.inputTokenDetails?.cacheReadTokens ?? 0,
+      cacheWriteTokens: step.usage.inputTokenDetails?.cacheWriteTokens ?? 0,
+      reasoningTokens: step.usage.outputTokenDetails?.reasoningTokens ?? 0,
+    })
+  }
+  return { tokens, costUsd }
 }

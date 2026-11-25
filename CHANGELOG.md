@@ -12,6 +12,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Call events: every `generateText`, `streamText` and `generateObject` call reports `call:started`, `attempt:started`, `step:finished`, `fallback` and then exactly one `call:completed` or `call:failed`; a breaker the manager builds reports `breaker:state`. Receive them per call with `onEvent`, or for every call with `new AiManager(config, { observer })`. The service provider forwards them to the AdonisJS emitter as `ai:<type>`, typed in `EventsList`. A handler that throws or rejects is logged and never fails the call. See `docs/guide/observability.md`.
 - `adonis-ai-kit/events`: the `AiEvent` types, `emitterObserver(emitter)` and `EventBuffer`, a bounded queue that holds events until a sink is attached (moved here from optimus-grid's `EventTracker`).
 - `telemetry` option on `generateText`, `streamText` and `generateObject`: passed to the AI SDK as is.
+- Per-call budget enforcement via `budget: { enforcer, agentName?, projectedTokens?, projectedCostUsd? }` on `generateText`, `streamText` and `generateObject`: reserves capacity before the first model call (throwing `BudgetExceededError` when exhausted), stops tool loops once the agent or session budget runs out, and settles actual usage (or releases on zero-token failure) when the call or stream finishes. `loopSpend(steps, costTracker)` is exported from `adonis-ai-kit/budget`.
+- `budget.enforce` option in `AiConfig` (default `false`): stops tool loops after the step that crosses `maxTokensPerRequest` or `maxCostPerRequestUsd`.
 
 ### Deprecated
 

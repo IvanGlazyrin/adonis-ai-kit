@@ -26,6 +26,8 @@ import { ApprovalSecret } from './approvals/secret.js'
 import type { PendingApproval } from './approvals/types.js'
 import { cacheControlFor, mergeProviderOptions, validatePromptCache } from './prompt_cache.js'
 import { CostTracker } from './budget/cost_tracker.js'
+import { CallBudgetHold } from './budget/call_budget.js'
+import { stopOnBudget } from './budget/stop_condition.js'
 import type { ModelPricing } from './budget/types.js'
 import { ConfirmationService } from './guard/confirmation.js'
 import { ToolRegistry } from './guard/registry.js'
@@ -37,6 +39,7 @@ import { CircuitBreaker } from './circuit_breaker.js'
 import {
   AcpCallFailedError,
   AiException,
+  BudgetExceededError,
   CascadingFallbackError,
   ProviderConfigError,
 } from './errors.js'
@@ -99,6 +102,8 @@ interface AttemptState {
   acpCallFailed?: AcpCallFailedError
   /** Told about every step this attempt finishes, after its usage is recorded. Set when the call has events. */
   onStep?: (step: StepResult<ToolSet>) => void
+  /** Ends the tool loop when the call's budget runs out. Set when the call has a `budget`. */
+  budgetStop?: StopCondition<ToolSet>
 }
 
 interface AttemptContext {
@@ -131,6 +136,8 @@ type ChainRequest = ModelChainCallOptions & {
   abortSignal?: AbortSignal
   /** The call's events: attempts, steps and fallbacks are reported here. */
   events?: CallEvents
+  /** The call's hold on its budget: every attempt's spend is added to it. */
+  budgetHold?: CallBudgetHold
 }
 
 /** `ResolvedModel` entries keep their order; strings become `ref` candidates. Same dedupe rules as `buildChainCandidates`. */
@@ -424,9 +431,14 @@ function assertNoApprovalParts(messages: ModelMessage[] | undefined): void {
  * The caller's stop conditions, plus one that ends the run once a tool raised an ACP failure. Without a stop condition
  * the SDK runs one step, so that default is kept.
  */
-function stopConditionsOf(options: GenerateTextOptions, state: AttemptState): StopCondition<ToolSet>[] {
+function stopConditionsOf(
+  options: GenerateTextOptions,
+  state: AttemptState,
+  limits: Array<StopCondition<ToolSet> | undefined> = []
+): StopCondition<ToolSet>[] {
   const own = options.stopWhen ?? stepCountIs(options.maxSteps ? options.maxSteps : 1)
-  return [...(Array.isArray(own) ? own : [own]), () => state.acpCallFailed !== undefined]
+  const extra = [state.budgetStop, ...limits].filter((c): c is StopCondition<ToolSet> => c !== undefined)
+  return [...(Array.isArray(own) ? own : [own]), ...extra, () => state.acpCallFailed !== undefined]
 }
 
 /** The approval secret of a config: a plain value is wrapped, so the config copy never holds it in clear. */
@@ -566,6 +578,31 @@ export class AiManager {
         config.circuitBreaker?.onStateChange?.(key, from, to)
       },
     }
+  }
+
+  /**
+   * The call's hold on its `budget`, or `undefined` without one. Throws `BudgetExceededError` when the agent or the
+   * session has nothing left, before any model is called.
+   */
+  private openBudget(options: { budget?: GenerateTextOptions['budget']; agentName?: string }): CallBudgetHold | undefined {
+    if (!options.budget) return undefined
+    const hold = CallBudgetHold.open(options.budget, this.agentNameOf(options))
+    if (!hold) {
+      const agentName = options.budget.agentName ?? this.agentNameOf(options)
+      throw new BudgetExceededError(`Budget exhausted for agent "${agentName}": the call was not made`, {
+        agentName,
+        summary: options.budget.enforcer.getSummary(),
+      })
+    }
+    return hold
+  }
+
+  /** With `budget.enforce`, a stop condition for the per-request limits of the config. */
+  private requestLimitStop(): StopCondition<ToolSet> | undefined {
+    const budget = this.config.budget
+    if (!budget?.enforce) return undefined
+    if (budget.maxTokensPerRequest === undefined && budget.maxCostPerRequestUsd === undefined) return undefined
+    return stopOnBudget({ maxTokens: budget.maxTokensPerRequest, maxCostUsd: budget.maxCostPerRequestUsd }, this.costTracker)
   }
 
   /** The events of a new call, sent to the call's `onEvent` and to the manager's observer. */
@@ -977,6 +1014,7 @@ export class AiManager {
     return async (ctx) => {
       const startTime = Date.now()
       const events = request.events
+      if (request.budgetHold) ctx.state.budgetStop = request.budgetHold.stopCondition(this.costTracker)
       if (events) {
         events.emit({ type: 'attempt:started', provider: ctx.providerName, model: ctx.modelName, breakerKey: ctx.breakerKey })
         let stepNumber = 0
@@ -999,7 +1037,7 @@ export class AiManager {
       } catch (err) {
         const usage = failedAttemptUsage(err, ctx.state)
         if (usage.totalTokens > 0) {
-          await this.recordCost(
+          const failedCost = await this.recordCost(
             this.agentNameOf(request),
             ctx.providerName,
             ctx.modelName,
@@ -1008,6 +1046,7 @@ export class AiManager {
             this.warmPricing(ctx.providerName, ctx.modelName),
             { failed: true, errorClass: classifyError(err).errorClass }
           )
+          request.budgetHold?.add(usage.totalTokens, failedCost ?? 0)
         }
         throw err
       }
@@ -1255,7 +1294,7 @@ export class AiManager {
       providerOptions: options.providerOptions,
       repairToolCall: options.repairToolCall,
       telemetry: options.telemetry,
-      stopWhen: stopConditionsOf(options, state),
+      stopWhen: stopConditionsOf(options, state, [this.requestLimitStop()]),
       maxRetries: options.maxRetries,
       onToolExecutionStart: sideEffects.onToolExecutionStart,
       onStepEnd: async (step: StepResult<ToolSet>) => {
@@ -1352,8 +1391,10 @@ export class AiManager {
   private async observedTextTurn(options: GenerateTextOptions, resume?: ResumeContext): Promise<GenerateTextResult> {
     const events = this.callEventsFor(options)
     events.started('text', options.metadata)
+    let budgetHold: CallBudgetHold | undefined
     try {
-      const result = await this.generateTextTurn(options, resume, events)
+      budgetHold = this.openBudget(options)
+      const result = await this.generateTextTurn(options, resume, events, budgetHold)
       events.completed({
         provider: result.provider,
         model: result.model,
@@ -1366,6 +1407,8 @@ export class AiManager {
     } catch (err) {
       events.failed(err)
       throw err
+    } finally {
+      budgetHold?.close()
     }
   }
 
@@ -1376,7 +1419,8 @@ export class AiManager {
   private async generateTextTurn(
     options: GenerateTextOptions,
     resume?: ResumeContext,
-    events?: CallEvents
+    events?: CallEvents,
+    budgetHold?: CallBudgetHold
   ): Promise<GenerateTextResult> {
     assertPromptIsString(options.prompt)
     if (!resume) assertNoApprovalParts(options.messages)
@@ -1401,7 +1445,8 @@ export class AiManager {
       options.schema ? Output.object({ schema: options.schema }) : undefined,
       (done) => ({ finishReason: done.finishReason, ...options.metadata }),
       approval,
-      events
+      events,
+      budgetHold
     ).catch(async (err: unknown) => {
       if (resume && turn && err instanceof ApprovalSignatureError) await this.closeApprovalStep(turn, resume.run)
       throw err
@@ -1480,16 +1525,24 @@ export class AiManager {
   async streamText(options: StreamTextOptions): Promise<StreamTextResult> {
     const events = this.callEventsFor(options)
     events.started('stream', options.metadata)
+    let budgetHold: CallBudgetHold | undefined
     try {
-      return await this.streamTextCall(options, events)
+      budgetHold = this.openBudget(options)
+      return await this.streamTextCall(options, events, budgetHold)
     } catch (err) {
       events.failed(err)
+      // The stream never started, so nothing else will settle the hold.
+      budgetHold?.close()
       throw err
     }
   }
 
   /** `streamText` without the call's start and early-failure events. The stream reports how it ended. */
-  private async streamTextCall(options: StreamTextOptions, events: CallEvents): Promise<StreamTextResult> {
+  private async streamTextCall(
+    options: StreamTextOptions,
+    events: CallEvents,
+    budgetHold?: CallBudgetHold
+  ): Promise<StreamTextResult> {
     validatePromptCache(options)
     assertPromptIsString(options.prompt)
     assertNoApprovalParts(options.messages)
@@ -1516,7 +1569,7 @@ export class AiManager {
     })
 
     const { result: raw, provider, model } = await this.executeWithFallback(
-      { ...callOptions, abortSignal: signal, events },
+      { ...callOptions, abortSignal: signal, events, budgetHold },
       async ({ getModel, modelName, providerName, breakerKey, state, acp }) => {
         const pricingReady = this.warmPricing(providerName, modelName)
         const languageModel = withJsonRecovery(await getModel(), callOptions, acp)
@@ -1551,7 +1604,9 @@ export class AiManager {
                 { finishReason, ...options.metadata, ...extraMetadata }
               )
               this.warnIfOverBudget(agentName, usage.totalTokens, costUsd)
+              budgetHold?.add(usage.totalTokens, costUsd ?? 0)
             }
+            budgetHold?.close()
             if (turn && completedMessages) {
               try {
                 await turn.commit(completedMessages, { state: commitState })
@@ -1693,8 +1748,10 @@ export class AiManager {
   async generateObject<T>(options: GenerateObjectOptions<T>): Promise<GenerateObjectResult<T>> {
     const events = this.callEventsFor(options)
     events.started('object')
+    let budgetHold: CallBudgetHold | undefined
     try {
-      const generated = await this.generateObjectCall(options, events)
+      budgetHold = this.openBudget(options)
+      const generated = await this.generateObjectCall(options, events, budgetHold)
       events.completed({
         provider: generated.provider,
         model: generated.model,
@@ -1708,12 +1765,15 @@ export class AiManager {
     } catch (err) {
       events.failed(err)
       throw err
+    } finally {
+      budgetHold?.close()
     }
   }
 
   private async generateObjectCall<T>(
     options: GenerateObjectOptions<T>,
-    events: CallEvents
+    events: CallEvents,
+    budgetHold?: CallBudgetHold
   ): Promise<GenerateObjectResult<T> & { finishReason: string }> {
     assertPromptIsString(options.prompt)
     assertNoApprovalParts(options.messages)
@@ -1727,7 +1787,8 @@ export class AiManager {
       }),
       () => ({ mode: 'structured_object' }),
       undefined,
-      events
+      events,
+      budgetHold
     )
 
     return {
@@ -1757,12 +1818,13 @@ export class AiManager {
     output: ReturnType<typeof Output.object> | undefined,
     costMetadata: (result: TextCallResult) => Record<string, unknown>,
     approval?: ApprovalContext,
-    events?: CallEvents
+    events?: CallEvents,
+    budgetHold?: CallBudgetHold
   ) {
     validatePromptCache(options)
     const startTime = Date.now()
     const { result, provider, model } = await this.executeWithFallback(
-      { ...options, events },
+      { ...options, events, budgetHold },
       async ({ getModel, modelName, providerName, state, acp }) => {
         void this.warmPricing(providerName, modelName)
         const languageModel = withJsonRecovery(await getModel(), options, acp)
@@ -1787,6 +1849,7 @@ export class AiManager {
       this.warmPricing(provider, model),
       costMetadata(result)
     )
+    budgetHold?.add(usage.totalTokens, costUsd ?? 0)
 
     return { result, provider, model, usage, durationMs, costUsd }
   }

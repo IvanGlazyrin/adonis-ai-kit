@@ -125,4 +125,48 @@ A call may proceed while `used + reserved + projected` stays strictly below the 
 
 For tool loops, `stopOnBudget(limits, ai.getCostTracker())` stops the loop once a token or cost limit is exceeded (see [Step Control](/guide/step-control-and-cache#stopping-conditions-stopwhen)).
 
-The `budget.maxTokensPerRequest` and `budget.maxCostPerRequestUsd` config keys only log a warning when a call goes over them. They do not stop the call, so use `stopOnBudget` or `BudgetEnforcer` when a limit must hold.
+The `budget.maxTokensPerRequest` and `budget.maxCostPerRequestUsd` config keys log a warning when a call goes over them. Set `budget.enforce: true` to also stop a tool loop after the step that crosses either limit.
+
+---
+
+## Per-Call Budget (`options.budget`)
+
+Instead of calling `reserve()`, `settle()` and `release()` around every model call, pass a `BudgetEnforcer` directly to `generateText`, `streamText` or `generateObject`:
+
+```ts
+import ai from 'adonis-ai-kit/services/main'
+import { BudgetExceededError } from 'adonis-ai-kit'
+import { BudgetEnforcer } from 'adonis-ai-kit/budget'
+
+// One enforcer per user request or agent session
+const enforcer = new BudgetEnforcer({
+  perSessionMaxCostUsd: 2.0,
+  perSessionMaxTokens: 200_000,
+  perAgentMaxTokens: 50_000,
+})
+
+try {
+  const result = await ai.generateText({
+    prompt: 'Analyze the diff',
+    agentName: 'reviewer',
+    maxSteps: 8,
+    tools,
+    budget: {
+      enforcer,
+      // Optional: hold capacity while concurrent calls are in flight
+      projectedTokens: 2_000,
+    },
+  })
+} catch (error) {
+  if (error instanceof BudgetExceededError) {
+    // Refused before any model was called; model usage was 0
+  }
+}
+```
+
+When `budget` is passed:
+1. **Pre-flight reserve:** `enforcer.reserve(agentName, projectedTokens ?? 0, projectedCostUsd ?? 0)` runs before the first attempt. If the agent or session budget is already exhausted, `BudgetExceededError` (`E_AI_BUDGET_EXCEEDED`, `fatal`) is thrown without calling any model.
+2. **Tool loop cap:** a stop condition ends the tool loop after the step that exhausts the agent's or session's remaining budget.
+3. **Automatic settle / release:** tokens and USD from every attempt (including failed attempts that reported usage, or consumed streams) are settled on exit. A call that fails without spending tokens releases its reservation.
+
+Use `budget.agentName` when the budget bucket differs from the call's `agentName`.

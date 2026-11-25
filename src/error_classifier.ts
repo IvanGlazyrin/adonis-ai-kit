@@ -1,4 +1,4 @@
-import { AcpCallFailedError, AiException, ProviderUnavailableError, SubAgentApprovalError } from './errors.js'
+import { AcpCallFailedError, AiException, BudgetExceededError, ProviderUnavailableError, SubAgentApprovalError } from './errors.js'
 
 /**
  * - `retryable`: transient upstream failure; try the next provider
@@ -263,6 +263,8 @@ function classifyWithoutStatus(error: unknown, abortSignal?: AbortSignal): Error
   if (error instanceof AcpCallFailedError) return outcomeOf('fatal', 'ACP call failed; caller decides')
   // A sub-agent that needs approval is a configuration problem; its message may quote a timeout from a tool.
   if (error instanceof SubAgentApprovalError) return outcomeOf('fatal', 'sub-agent needs human approval')
+  // Another model would draw on the same budget.
+  if (error instanceof BudgetExceededError) return outcomeOf('fatal', 'budget exhausted')
   if (error === null || typeof error !== 'object') return outcomeOf('fatal', 'unknown error')
 
   const name = (error as Record<string, any>).name
