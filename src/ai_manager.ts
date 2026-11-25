@@ -1,466 +1,67 @@
-import {
-  extractJsonMiddleware,
-  generateText,
-  streamText,
-  stepCountIs,
-  InvalidToolApprovalSignatureError,
-  NoObjectGeneratedError,
-  Output,
-  wrapLanguageModel,
-} from 'ai'
-import type {
-  Instructions,
-  LanguageModel,
-  LanguageModelUsage,
-  ModelMessage,
-  PrepareStepFunction,
-  StepResult,
-  StopCondition,
-  ToolSet,
-} from 'ai'
-import { extractFirstJsonValue } from './json_recovery.js'
-import { Conversations, type ConversationTurn } from './conversations/conversations.js'
-import { type ApprovalRun, approvalsFromMessages, asJson, outputOfError, outputOfResult, pendingViews, toolApprovalFor, toolMessageOf } from './approvals/resumable.js'
+import { generateText, Output, type LanguageModel, type StopCondition, type ToolSet } from 'ai'
+import type { AgentLoader, AgentPromptConfig } from './agents/loader.js'
+import { AgentRunner, type AgentRunnerOptions } from './agents/agent_runner.js'
 import { ApprovalSignatureError } from './approvals/errors.js'
-import { ApprovalSecret } from './approvals/secret.js'
-import type { PendingApproval } from './approvals/types.js'
-import { cacheControlFor, mergeProviderOptions, validatePromptCache } from './prompt_cache.js'
-import { CostTracker } from './budget/cost_tracker.js'
+import { type ApprovalRun, approvalsFromMessages, asJson, pendingViews, toolMessageOf } from './approvals/resumable.js'
+import type { ApprovalSecret } from './approvals/secret.js'
 import { CallBudgetHold } from './budget/call_budget.js'
+import { CostTracker } from './budget/cost_tracker.js'
 import { stopOnBudget } from './budget/stop_condition.js'
-import type { ModelPricing } from './budget/types.js'
+import { CallEvents, deliverEvent, observerSink } from './call_events.js'
+import { type ModelsDevSource, resolveCatalogProviderId } from './catalog/source.js'
+import { CircuitBreaker } from './circuit_breaker.js'
+import { Conversations, type ConversationTurn } from './conversations/conversations.js'
+import { AiException, BudgetExceededError, ProviderConfigError } from './errors.js'
+import type { AiObserver } from './events/types.js'
 import { ConfirmationService } from './guard/confirmation.js'
 import { ToolRegistry } from './guard/registry.js'
-import { isAsyncIterable, resultOf } from './tool_stream.js'
+import type { Logger } from './logger.js'
+import {
+  DEFAULT_APPROVAL_TTL_MS,
+  PRICING_WAIT_MS,
+  type ResumeContext,
+  type TextCallParams,
+  type TextCallResult,
+  approvalFailure,
+  approvalSecretOf,
+  assertNoApprovalParts,
+  assertPromptIsString,
+  buildTextParams as buildCallTextParams,
+  closeApprovalStep,
+  defaultAgentLoader,
+  defaultCatalog,
+  inputMessages,
+  pricingMapOf,
+  settleUnavailableApprovals,
+  sleep,
+  withHistory,
+  withJsonRecovery,
+} from './manager/call_helpers.js'
+import { createChatBuilder } from './manager/chat_builder.js'
+import { type AttemptContext, type ChainRequest, executeWithFallback } from './manager/fallback.js'
+import { createDriver as buildDriver } from './manager/sdk_drivers.js'
+import { runStreamCall } from './manager/stream_call.js'
+import { type ApprovalContext, type AttemptState, approvalExecution as runApprovalExecution, toolPermission } from './manager/tool_preparation.js'
+import type { ToolDefinition } from './guard/types.js'
 import { McpTools } from './mcp/mcp_tools.js'
-import { isMcpTool } from './mcp/types.js'
-import { permissionMarkOf, type ToolDefinition, type ToolPermission } from './guard/types.js'
-import { CircuitBreaker } from './circuit_breaker.js'
-import {
-  AcpCallFailedError,
-  AiException,
-  BudgetExceededError,
-  CascadingFallbackError,
-  ProviderConfigError,
-} from './errors.js'
-import { CREDENTIAL_ERROR_CLASSES, classifyError } from './error_classifier.js'
-import { normalizeUsage, sumUsage } from './usage.js'
-import { ModelsDevSource, resolveCatalogProviderId } from './catalog/source.js'
-import type { ModelCatalogEntry } from './catalog/models_dev.js'
-import { AgentLoader, type AgentPromptConfig } from './agents/loader.js'
-import { AgentRunner, type AgentRunnerOptions } from './agents/agent_runner.js'
-import type { AcpProviderConfig } from './acp/types.js'
-import {
-  ACP_NPM,
-  LanguageModelFactory,
-  attemptSideEffectHooks,
-  buildChainCandidates,
-  runModelChain,
-  type ChainCandidate,
-  type LanguageModelSource,
-  type ResolvedModel,
-} from './models/index.js'
+import { LanguageModelFactory, type LanguageModelSource } from './models/index.js'
+import { validatePromptCache } from './prompt_cache.js'
 import type {
   AiConfig,
   AiDriver,
-  BaseProviderConfig,
-  ChatMessage,
   GenerateObjectOptions,
   GenerateObjectResult,
   GenerateTextOptions,
   GenerateTextResult,
-  CacheTtl,
-  ModelChainCallOptions,
   ProviderConfig,
-  ProviderOptions,
   StreamTextOptions,
   StreamTextResult,
   TokenUsage,
 } from './types.js'
-
-import type { Logger } from './logger.js'
-import { CallEvents, deliverEvent, observerSink } from './call_events.js'
-import type { AiObserver } from './events/types.js'
-import { toolCallsOf } from './events/tool_calls.js'
+import { normalizeUsage } from './usage.js'
 
 /** @deprecated Use Logger */
 export type LoggerContract = Logger
-
-type TextCallParams = Parameters<typeof generateText<ToolSet>>[0]
-type TextCallResult = Awaited<ReturnType<typeof generateText<ToolSet>>>
-type StreamCallParams = Parameters<typeof streamText<ToolSet>>[0]
-
-/** Per-attempt facts the fallback loop reads: whether tools (or an ACP call) already ran, and the usage of finished steps. */
-interface AttemptState {
-  toolsExecuted: boolean
-  /** Usage of every step this attempt finished, so a failed attempt's tokens can still be recorded. */
-  stepUsages: LanguageModelUsage[]
-  /**
-   * The first ACP failure a tool of this run raised (a sub-agent running an ACP agent, for example). It stops the run
-   * after the step, so the model cannot start the same agent again, and the call then fails with it.
-   */
-  acpCallFailed?: AcpCallFailedError
-  /** Told about every step this attempt finishes, after its usage is recorded. Set when the call has events. */
-  onStep?: (step: StepResult<ToolSet>) => void
-  /** Ends the tool loop when the call's budget runs out. Set when the call has a `budget`. */
-  budgetStop?: StopCondition<ToolSet>
-}
-
-interface AttemptContext {
-  /** Builds the language model for this attempt (driver model in a cascade, factory model in a chain). */
-  getModel: () => Promise<LanguageModel> | LanguageModel
-  modelName: string
-  providerName: string
-  /** Circuit breaker key of this attempt. */
-  breakerKey: string
-  state: AttemptState
-  /** Whether this attempt runs an ACP agent (its JSON and side-effect rules differ). */
-  acp: boolean
-}
-
-/** A cascade attempt whose driver is loaded and whose model is resolved. */
-interface PreparedAttempt {
-  driver: AiDriver
-  providerName: string
-  modelName: string
-  breakerKey: string
-}
-
-/** Reported for a failed attempt whose driver never loaded, so no model name is known yet. */
-const UNRESOLVED_MODEL = 'unresolved'
-
-type ChainRequest = ModelChainCallOptions & {
-  provider?: string
-  model?: string
-  agentName?: string
-  abortSignal?: AbortSignal
-  /** The call's events: attempts, steps and fallbacks are reported here. */
-  events?: CallEvents
-  /** The call's hold on its budget: every attempt's spend is added to it. */
-  budgetHold?: CallBudgetHold
-}
-
-/** `ResolvedModel` entries keep their order; strings become `ref` candidates. Same dedupe rules as `buildChainCandidates`. */
-function toChainCandidates(models: Array<ResolvedModel | string>): ChainCandidate[] {
-  if (models.every((m): m is ResolvedModel => typeof m !== 'string')) {
-    return buildChainCandidates({ chain: models })
-  }
-  const candidates: ChainCandidate[] = []
-  const seenRefs = new Set<string>()
-  const seenEntries = new Set<string>()
-  for (const entry of models) {
-    if (typeof entry === 'string') {
-      if (!entry || seenRefs.has(entry)) continue
-      seenRefs.add(entry)
-      candidates.push({ kind: 'ref', ref: entry, key: entry })
-      continue
-    }
-    const [candidate] = buildChainCandidates({ chain: [entry] })
-    const entryId = `${candidate.key}|${entry.providerID}/${entry.modelID}`
-    if (seenEntries.has(entryId)) continue
-    seenEntries.add(entryId)
-    candidates.push(candidate)
-  }
-  return candidates
-}
-
-type ModelFactory = (modelId: string) => LanguageModel
-type ClientFactory = (settings: Record<string, unknown>) => ModelFactory
-
-/** How one built-in SDK driver loads its package and builds its client. */
-interface SdkDriverSpec {
-  /** Name used in the missing-package error. */
-  label: string
-  pkg: string
-  factory: string
-  defaultModel: string
-  settings: (config: SdkDriverConfig) => Record<string, unknown>
-}
-
-type SdkDriverConfig = Pick<BaseProviderConfig, 'baseURL' | 'headers'> & {
-  apiKey?: string
-  organization?: string
-}
-
-const GOOGLE_DRIVER: SdkDriverSpec = {
-  label: 'Google/Gemini',
-  pkg: '@ai-sdk/google',
-  factory: 'createGoogleGenerativeAI',
-  defaultModel: 'gemini-3.5-flash',
-  settings: (c) => ({
-    apiKey: c.apiKey ?? process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY,
-    baseURL: c.baseURL,
-    headers: c.headers,
-  }),
-}
-
-/** Built-in SDK drivers, keyed by the `driver` value in provider config. */
-const SDK_DRIVERS: Record<string, SdkDriverSpec> = {
-  openai: {
-    label: 'OpenAI',
-    pkg: '@ai-sdk/openai',
-    factory: 'createOpenAI',
-    defaultModel: 'gpt-6-sol',
-    settings: (c) => ({
-      apiKey: c.apiKey ?? process.env.OPENAI_API_KEY,
-      organization: c.organization ?? process.env.OPENAI_ORG_ID,
-      baseURL: c.baseURL ?? process.env.OPENAI_BASE_URL,
-      headers: c.headers,
-    }),
-  },
-  anthropic: {
-    label: 'Anthropic',
-    pkg: '@ai-sdk/anthropic',
-    factory: 'createAnthropic',
-    defaultModel: 'claude-sonnet-5-5',
-    settings: (c) => ({
-      apiKey: c.apiKey ?? process.env.ANTHROPIC_API_KEY,
-      baseURL: c.baseURL ?? process.env.ANTHROPIC_BASE_URL,
-      headers: c.headers,
-    }),
-  },
-  google: GOOGLE_DRIVER,
-  gemini: GOOGLE_DRIVER,
-  groq: {
-    label: 'Groq',
-    pkg: '@ai-sdk/groq',
-    factory: 'createGroq',
-    defaultModel: 'openai/gpt-oss-120b',
-    settings: (c) => ({
-      apiKey: c.apiKey ?? process.env.GROQ_API_KEY,
-      baseURL: c.baseURL,
-      headers: c.headers,
-    }),
-  },
-  ollama: {
-    label: 'Ollama',
-    pkg: '@ai-sdk/openai-compatible',
-    factory: 'createOpenAICompatible',
-    defaultModel: 'llama3.2',
-    settings: (c) => ({
-      name: 'ollama',
-      baseURL: c.baseURL ?? process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434/v1',
-      headers: c.headers,
-    }),
-  },
-}
-
-
-const PRICING_WAIT_MS = 2_000
-
-/** The models.dev catalog for the manager, configured from the app's catalog settings. */
-function defaultCatalog(config: AiConfig, logger: Logger | undefined): ModelsDevSource {
-  return new ModelsDevSource({
-    logger,
-    cachePath: config.catalog?.cachePath,
-    overridePath: config.catalog?.overridePath,
-    ttlMs: config.catalog?.ttlMs,
-    systemProviders: config.catalog?.systemProviders,
-  })
-}
-
-/** The agent prompt loader for the manager, configured from the app's agent folders. */
-function defaultAgentLoader(config: AiConfig, logger: Logger | undefined): AgentLoader {
-  return new AgentLoader({
-    configsDir: config.agentConfigsDir,
-    skillsDir: config.agentSkillsDir,
-    logger,
-  })
-}
-
-/** Price table by model id and by provider-qualified id, for the models that have a catalog price. */
-function pricingMapOf(models: ModelCatalogEntry[]): Record<string, ModelPricing> {
-  const pricingMap: Record<string, ModelPricing> = {}
-  for (const m of models) {
-    if (m.pricing) {
-      pricingMap[m.id] = m.pricing
-      pricingMap[`${m.providerId}/${m.id}`] = m.pricing
-    }
-  }
-  return pricingMap
-}
-
-/**
- * The permission of a tool in a call. An explicit entry wins, then the permission the registry put on the tool. Without
- * either, a tool from an MCP server is 'deny' (fail-closed, even when it is passed here directly), and any other
- * tool is 'allow'.
- */
-function toolPermission(permissions: Record<string, ToolPermission> | undefined, name: string, tool?: unknown): ToolPermission {
-  if (hasOwnPermission(permissions, name)) return permissions![name]
-  return permissionMarkOf(tool) ?? (isMcpTool(tool) ? 'deny' : 'allow')
-}
-
-/** Whether a tool that runs locally declares the AI SDK's own `needsApproval` (`true` or a function). */
-function hasNativeApproval(tool: ToolDefinition): boolean {
-  return typeof tool.execute === 'function' && tool.needsApproval !== undefined && tool.needsApproval !== null && tool.needsApproval !== false
-}
-
-/**
- * The caller's own tools that survived `prepareTools`. The approval map is built from these, not from the wrapped
- * tools, so a wrapper that builds a fresh object cannot lose a tool's permission mark.
- */
-function callerToolsOf(callerTools: ToolSet | undefined, offered: ToolSet): ToolSet {
-  const own: ToolSet = {}
-  for (const name of Object.keys(offered)) own[name] = callerTools?.[name] ?? offered[name]
-  return own
-}
-
-function hasOwnPermission(permissions: Record<string, ToolPermission> | undefined, name: string): boolean {
-  return permissions !== undefined && Object.hasOwn(permissions, name)
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms)
-    timer.unref?.()
-  })
-}
-
-/** The chunks of a streaming tool, passed on as they come. An error from the stream is recorded, then thrown on. */
-async function* recordedStream(stream: AsyncIterable<unknown>, record: (err: unknown) => void): AsyncGenerator<unknown> {
-  try {
-    for await (const chunk of stream) yield chunk
-  } catch (err) {
-    record(err)
-    throw err
-  }
-}
-
-/**
- * Tokens a failed attempt consumed. A `NoObjectGeneratedError` carries its own usage, which already covers
- * the failing call; otherwise the usage of the steps the attempt finished is the consumed amount.
- */
-function failedAttemptUsage(err: unknown, state: AttemptState): TokenUsage {
-  if (NoObjectGeneratedError.isInstance(err)) return normalizeUsage(err.usage)
-  return sumUsage(state.stepUsages)
-}
-
-/** The system prompt, as a cache-marked system message when `promptCache.instructions` is set. */
-function systemInstructions(options: GenerateTextOptions): Instructions | undefined {
-  if (!options.system) return undefined
-  const ttl = options.promptCache?.instructions
-  if (!ttl) return options.system
-  return {
-    role: 'system',
-    content: options.system,
-    providerOptions: { anthropic: { cacheControl: cacheControlFor(ttl) } },
-  }
-}
-
-/**
- * The tools with the prompt-cache marker on the last one in name order, and that order as `toolOrder`, so the
- * cached prefix stays the same between calls. Without a `ttl` the tools pass through unchanged.
- */
-function cacheTools(
-  tools: ToolSet | undefined,
-  ttl: CacheTtl | undefined
-): { tools: ToolSet | undefined; toolOrder: string[] | undefined } {
-  if (!tools || !ttl) return { tools, toolOrder: undefined }
-  const order = Object.keys(tools).sort()
-  const last = order[order.length - 1]
-  const lastTool = tools[last] as { providerOptions?: ProviderOptions }
-  const marked = {
-    ...tools,
-    [last]: {
-      ...lastTool,
-      providerOptions: mergeProviderOptions(lastTool.providerOptions, {
-        anthropic: { cacheControl: cacheControlFor(ttl) },
-      }),
-    },
-  } as ToolSet
-  return { tools: marked, toolOrder: order }
-}
-
-/** With `jsonRecovery`, the model strips the prose around its JSON in every text part. String and ACP models are left alone. */
-function withJsonRecovery(
-  model: LanguageModel,
-  options: { jsonRecovery?: boolean; schema?: unknown },
-  acp: boolean
-): LanguageModel {
-  if (!options.jsonRecovery || !options.schema || acp || typeof model === 'string') return model
-  return wrapLanguageModel({
-    model,
-    middleware: extractJsonMiddleware({ transform: extractFirstJsonValue }),
-  })
-}
-
-/** The messages a call adds to the conversation: its `messages`, or its `prompt` as one user message. */
-function inputMessages(options: GenerateTextOptions): ModelMessage[] {
-  if (options.messages && options.messages.length > 0) return options.messages
-  if (options.prompt) return [{ role: 'user', content: options.prompt }]
-  throw new AiException('Either "prompt" or non-empty "messages" is required.', 'E_AI_INVALID_ARGUMENT')
-}
-
-/** The call with the stored history placed before its own messages. The prompt is folded into the messages. */
-function withHistory<T extends GenerateTextOptions>(options: T, history: ModelMessage[], input: ModelMessage[]): T {
-  return { ...options, prompt: undefined, messages: [...history, ...input] }
-}
-
-/**
- * A `prompt` is one string. The AI SDK also accepts a message list there, which would skip the check of approval parts
- * that `messages` gets, so anything but a string is refused.
- */
-function assertPromptIsString(prompt: unknown): void {
-  if (prompt !== undefined && prompt !== null && typeof prompt !== 'string') {
-    throw new AiException('prompt must be a string; send a message list as `messages`.', 'E_AI_INVALID_ARGUMENT')
-  }
-}
-
-/**
- * Approval parts only come from the library: a `resumable` run writes them, and `resolveApprovals` answers them. A caller
- * that sends its own would replay a signed request into another conversation, so such messages are refused.
- */
-function assertNoApprovalParts(messages: ModelMessage[] | undefined): void {
-  const carriesApproval = (messages ?? []).some(
-    (message) =>
-      Array.isArray(message.content) &&
-      message.content.some((part) => {
-        const type = (part as { type?: unknown }).type
-        return type === 'tool-approval-request' || type === 'tool-approval-response'
-      })
-  )
-  if (carriesApproval) {
-    throw new AiException(
-      'Messages may not contain tool approval parts: approvals are answered with ai.conversations.resolveApprovals (E_AI_APPROVAL_REPLAY).',
-      'E_AI_APPROVAL_REPLAY'
-    )
-  }
-}
-
-/**
- * The caller's stop conditions, plus one that ends the run once a tool raised an ACP failure. Without a stop condition
- * the SDK runs one step, so that default is kept.
- */
-function stopConditionsOf(
-  options: GenerateTextOptions,
-  state: AttemptState,
-  limits: Array<StopCondition<ToolSet> | undefined> = []
-): StopCondition<ToolSet>[] {
-  const own = options.stopWhen ?? stepCountIs(options.maxSteps ? options.maxSteps : 1)
-  const extra = [state.budgetStop, ...limits].filter((c): c is StopCondition<ToolSet> => c !== undefined)
-  return [...(Array.isArray(own) ? own : [own]), ...extra, () => state.acpCallFailed !== undefined]
-}
-
-/** The approval secret of a config: a plain value is wrapped, so the config copy never holds it in clear. */
-function approvalSecretOf(config: AiConfig): ApprovalSecret | undefined {
-  const secret = config.approvals?.secret
-  if (secret === undefined) return undefined
-  return secret instanceof ApprovalSecret ? secret : new ApprovalSecret(secret)
-}
-
-/** Approval context of one call: the secret that signs requests, and for a resumed step the run that records it. */
-interface ApprovalContext {
-  secret: ApprovalSecret
-  run?: ApprovalRun
-}
-
-/** A call that continues a paused step: the run that holds its approvals, and the approvals that expired. */
-interface ResumeContext {
-  run: ApprovalRun
-  expiredApprovalIds: string[]
-}
-
-const DEFAULT_APPROVAL_TTL_MS = 24 * 60 * 60 * 1000
 
 /** Services an `AiManager` uses instead of creating its own. Every field is optional. */
 export interface AiManagerOptions {
@@ -704,21 +305,14 @@ export class AiManager {
     return this.agentLoader
   }
 
-  /**
-   * Instantiates an executable AgentRunner by loading its markdown manifest and skills.
-   */
+  /** Instantiates an executable AgentRunner by loading its markdown manifest and skills. */
   async agent(name: string, options?: AgentRunnerOptions): Promise<AgentRunner> {
     const promptConfig = await this.agentLoader.loadAgentPrompt(name)
     return new AgentRunner(this, promptConfig, options)
   }
 
-  /**
-   * Loads all agent prompt configurations from the configured directory.
-   */
-  async loadAgents(
-    configsDir?: string,
-    skillsDir?: string
-  ): Promise<Record<string, AgentPromptConfig>> {
+  /** Loads all agent prompt configurations from the configured directory. */
+  async loadAgents(configsDir?: string, skillsDir?: string): Promise<Record<string, AgentPromptConfig>> {
     return this.agentLoader.loadAllAgentPrompts(configsDir, skillsDir)
   }
 
@@ -754,9 +348,7 @@ export class AiManager {
     return pending
   }
 
-  /**
-   * Alias for use() matching AdonisJS convention.
-   */
+  /** Alias for use() matching AdonisJS convention. */
   async driver(name?: string): Promise<AiDriver> {
     return this.use(name)
   }
@@ -791,9 +383,7 @@ export class AiManager {
     )
   }
 
-  /**
-   * Starts loading catalog pricing for a model in the background (deduplicated).
-   */
+  /** Starts loading catalog pricing for a model in the background (deduplicated). */
   private warmPricing(providerName: string, modelName: string): Promise<void> {
     if (this.config.catalog?.autoPricing === false) return Promise.resolve()
     // Chain models are not configured providers: their provider id is already a catalog id.
@@ -819,449 +409,26 @@ export class AiManager {
     return warmup
   }
 
-  /**
-   * Executes an operation with cascading fallback across the primary and explicitly configured
-   * backup providers.
-   *
-   * - The requested model is used for the primary provider only; fallbacks use `fallbackModels`
-   *   or their own `defaultModel`.
-   * - Only transient failures (429, 5xx, network) fall through to the next provider; bad requests,
-   *   validation errors and aborts are rethrown immediately, as are failures after tools ran.
-   * - The circuit breaker is keyed by `provider:model`.
-   */
-  private async executeWithFallback<T>(
+  private executeWithFallback<T>(
     request: ChainRequest,
     operation: (ctx: AttemptContext) => Promise<T>
   ): Promise<{ result: T; provider: string; model: string }> {
-    const attemptOperation = this.accountFailedAttempts(request, operation)
-    if (request.models && request.models.length > 0) {
-      return this.executeOverChain(request, request.models, attemptOperation)
-    }
-
-    const target = this.resolveTarget(request)
-    const cascade = this.cascadeFor(target.provider)
-    const attempts: Array<{ provider: string; model: string; error: Error }> = []
-
-    for (const [index, providerName] of cascade.entries()) {
-      request.abortSignal?.throwIfAborted()
-
-      const pConfig = this.config.providers[providerName]
-      if (!pConfig) continue
-
-      const state: AttemptState = { toolsExecuted: false, stepUsages: [] }
-      let attempt: PreparedAttempt
-      try {
-        attempt = await this.prepareAttempt(providerName, pConfig, index === 0, target.model)
-      } catch (err) {
-        this.recordFailedAttempt(attempts, { err, request, providerName, modelName: UNRESOLVED_MODEL, breakerKey: providerName, state, next: cascade[index + 1] })
-        continue
-      }
-
-      const { modelName, breakerKey } = attempt
-      if (!this.circuitBreaker.isAvailable(breakerKey)) {
-        this.logger?.warn?.(`[AiManager] Skipping "${breakerKey}" because circuit breaker is OPEN.`)
-        attempts.push({ provider: providerName, model: modelName, error: new Error('circuit breaker is open') })
-        continue
-      }
-
-      try {
-        const result = await this.attemptProvider(request, attempt, state, attemptOperation)
-        return { result, provider: providerName, model: modelName }
-      } catch (err) {
-        this.recordFailedAttempt(attempts, { err, request, providerName, modelName, breakerKey, state, next: cascade[index + 1] })
-      }
-    }
-
-    throw new CascadingFallbackError(attempts)
-  }
-
-  /** The primary provider (the requested one, or the default), then the fallbacks that are not the primary. */
-  private cascadeFor(requested: string | undefined): string[] {
-    const primary = requested ?? this.config.default
-    return [primary, ...(this.config.fallbackCascade ?? []).filter((p) => p !== primary)]
-  }
-
-  /**
-   * Records a failed attempt and moves on, unless the failure may not fall back (fatal, or after tools
-   * ran), which rethrows it from assertCanFallBack.
-   */
-  private recordFailedAttempt(
-    attempts: Array<{ provider: string; model: string; error: Error }>,
-    failure: {
-      err: unknown
-      request: ChainRequest
-      providerName: string
-      modelName: string
-      breakerKey: string
-      state: AttemptState
-      /** The provider tried next, if any. */
-      next?: string
-    }
-  ): void {
-    const { err, request, providerName, modelName, breakerKey, state, next } = failure
-    const classification = classifyError(err, request.abortSignal)
-    const acp = this.config.providers[providerName]?.driver === 'acp'
-    this.assertCanFallBack(err, classification.kind, state, breakerKey, acp)
-
-    const error = err instanceof Error ? err : new Error(String(err))
-    attempts.push({ provider: providerName, model: modelName, error })
-    this.logger?.warn?.(
-      `[AiManager] "${breakerKey}" failed (${classification.reason}: ${error.message}). Attempting next fallback...`
-    )
-    if (next !== undefined) {
-      request.events?.emit({ type: 'fallback', from: breakerKey, to: next, errorClass: classification.errorClass })
-    }
-  }
-
-  /**
-   * Loads the provider's driver and resolves the concrete model: the requested or configured model,
-   * else the driver's own default. The breaker key and pricing use that resolved name.
-   */
-  private async prepareAttempt(
-    providerName: string,
-    pConfig: ProviderConfig,
-    isPrimary: boolean,
-    requestedModel: string | undefined
-  ): Promise<PreparedAttempt> {
-    const driver = await this.use(providerName)
-    const modelName = this.modelNameFor(pConfig, providerName, isPrimary, requestedModel) ?? driver.defaultModel
-    return { driver, providerName, modelName, breakerKey: `${providerName}:${modelName}` }
-  }
-
-  /** One provider's attempt, run through its circuit breaker. */
-  private attemptProvider<T>(
-    request: ChainRequest,
-    attempt: PreparedAttempt,
-    state: AttemptState,
-    operation: (ctx: AttemptContext) => Promise<T>
-  ): Promise<T> {
-    const { driver, providerName, modelName, breakerKey } = attempt
-    return this.circuitBreaker.execute(
-      breakerKey,
-      () =>
-        operation({
-          getModel: () => driver.getModel(modelName),
-          modelName,
-          providerName,
-          breakerKey,
-          state,
-          acp: this.config.providers[providerName]?.driver === 'acp',
-        }),
-      (err) => classifyError(err, request.abortSignal).countsAsFailure
-    )
-  }
-
-  /** Splits a `provider/model` string, but only when the prefix really is a configured provider. */
-  private resolveTarget(request: ChainRequest): { provider?: string; model?: string } {
-    const { provider, model } = request
-    if (model && model.includes('/') && !provider) {
-      const [head, ...rest] = model.split('/')
-      if (Object.hasOwn(this.config.providers, head)) {
-        return { provider: head, model: rest.join('/') }
-      }
-    }
-    return { provider, model }
-  }
-
-  /**
-   * The primary uses the requested model; a fallback uses its configured fallback model. Undefined
-   * means no model is configured, so the driver's default applies.
-   */
-  private modelNameFor(
-    pConfig: ProviderConfig,
-    providerName: string,
-    isPrimary: boolean,
-    requestedModel: string | undefined
-  ): string | undefined {
-    if (isPrimary) return requestedModel ?? pConfig.defaultModel
-    const fallbackModels = this.config.fallbackModels
-    const configured = fallbackModels && Object.hasOwn(fallbackModels, providerName) ? fallbackModels[providerName] : undefined
-    return configured ?? pConfig.defaultModel
-  }
-
-  /**
-   * Throws unless a failed attempt may move on: fatal errors end the call, and so does any attempt
-   * that already ran tools, to avoid repeating side effects on another provider. A retryable failure of an
-   * ACP agent ends the call too: the agent runs its own tools inside one call, so a retry could repeat them.
-   */
-  private assertCanFallBack(
-    err: unknown,
-    kind: string,
-    state: AttemptState,
-    breakerKey: string,
-    acp: boolean
-  ): void {
-    if (kind === 'fatal') throw err
-    if (!state.toolsExecuted && !(acp && kind === 'retryable')) return
-    const message = err instanceof Error ? err.message : String(err)
-    const reason = acp && kind === 'retryable' ? 'after a retryable ACP agent failure' : 'after executing tools'
-    this.logger?.error?.(
-      `[AiManager] "${breakerKey}" failed ${reason} (${message}); not retrying on another provider to avoid repeating side effects.`
-    )
-    // The caller gets the typed error, so it can tell an ACP agent that may have changed files from a plain failure.
-    if (acp && kind === 'retryable') throw new AcpCallFailedError(breakerKey, err)
-    throw err
-  }
-
-  /**
-   * Wraps an attempt so that a failure still records the tokens it consumed (D2.4). The record carries
-   * `failed: true` and the error class. It is written before the fallback decision, on every path.
-   */
-  private accountFailedAttempts<T>(
-    request: ChainRequest,
-    operation: (ctx: AttemptContext) => Promise<T>
-  ): (ctx: AttemptContext) => Promise<T> {
-    return async (ctx) => {
-      const startTime = Date.now()
-      const events = request.events
-      if (request.budgetHold) ctx.state.budgetStop = request.budgetHold.stopCondition(this.costTracker)
-      if (events) {
-        events.emit({ type: 'attempt:started', provider: ctx.providerName, model: ctx.modelName, breakerKey: ctx.breakerKey })
-        let stepNumber = 0
-        ctx.state.onStep = (step) =>
-          events.emit({
-            type: 'step:finished',
-            provider: ctx.providerName,
-            model: ctx.modelName,
-            stepNumber: stepNumber++,
-            toolCalls: toolCallsOf(step),
-            usage: normalizeUsage(step.usage),
-            finishReason: step.finishReason ?? 'stop',
-          })
-      }
-      try {
-        const value = await operation(ctx)
-        // A tool that ran an ACP agent stopped the run; the call fails with that error, not with its partial result.
-        if (ctx.state.acpCallFailed) throw ctx.state.acpCallFailed
-        return value
-      } catch (err) {
-        const usage = failedAttemptUsage(err, ctx.state)
-        if (usage.totalTokens > 0) {
-          const failedCost = await this.recordCost(
-            this.agentNameOf(request),
-            ctx.providerName,
-            ctx.modelName,
-            usage,
-            Date.now() - startTime,
-            this.warmPricing(ctx.providerName, ctx.modelName),
-            { failed: true, errorClass: classifyError(err).errorClass }
-          )
-          request.budgetHold?.add(usage.totalTokens, failedCost ?? 0)
-        }
-        throw err
-      }
-    }
-  }
-
-  /**
-   * Executes an operation over an explicit chain of models. The provider cascade is not used; the
-   * chain is authoritative and every entry has its own per-credential circuit breaker. A 401, 403 or 402 moves
-   * on to the next entry unless `fallbackOnCredentialErrors` is false.
-   */
-  private async executeOverChain<T>(
-    request: ChainRequest,
-    models: Array<ResolvedModel | string>,
-    operation: (ctx: AttemptContext) => Promise<T>
-  ): Promise<{ result: T; provider: string; model: string }> {
-    request.abortSignal?.throwIfAborted()
-
-    const stringEntry = models.find((m): m is string => typeof m === 'string' && m !== '')
-    if (stringEntry !== undefined && !this.config.resolver) {
-      throw new ProviderConfigError('model-chain', `a resolver is required to resolve "${stringEntry}"`)
-    }
-
-    const { result, model } = await runModelChain(
-      toChainCandidates(models),
-      (attempt) => {
-        // `state.toolsExecuted = true` inside prepareTools tells the chain not to fall back.
-        const state: AttemptState = {
-          get toolsExecuted() {
-            return false
-          },
-          set toolsExecuted(value: boolean) {
-            if (value) attempt.markToolsExecuted()
-          },
-          stepUsages: [],
-        }
-        return operation({
-          getModel: () => this.languageModels.create(attempt.model),
-          modelName: attempt.model.modelID,
-          providerName: attempt.model.providerID,
-          breakerKey: attempt.key,
-          state,
-          acp: attempt.model.npm === ACP_NPM,
-        })
-      },
+    return executeWithFallback(
       {
-        breaker: this.circuitBreaker,
-        resolver: this.config.resolver,
-        abortSignal: request.abortSignal,
-        onFallback: (event) => {
-          request.events?.emit({ type: 'fallback', from: event.fromModel, to: event.toModel, errorClass: event.errorClass })
-          return request.onFallback?.(event)
-        },
+        config: this.config,
         logger: this.logger,
-        alsoFallBackOn: this.fallsBackOnCredentialErrors(request) ? CREDENTIAL_ERROR_CLASSES : undefined,
-      }
+        circuitBreaker: this.circuitBreaker,
+        costTracker: this.costTracker,
+        languageModels: () => this.languageModels,
+        use: (name) => this.use(name),
+        warmPricing: (provider, model) => this.warmPricing(provider, model),
+        recordCost: (agent, provider, model, usage, durationMs, pricingReady, metadata) =>
+          this.recordCost(agent, provider, model, usage, durationMs, pricingReady, metadata),
+        agentNameOf: (opts) => this.agentNameOf(opts),
+      },
+      request,
+      operation
     )
-    return { result, provider: model.providerID, model: model.modelID }
-  }
-
-  /** The call's `fallbackOnCredentialErrors`, then the config's, then true. */
-  private fallsBackOnCredentialErrors(request: ChainRequest): boolean {
-    return request.fallbackOnCredentialErrors ?? this.config.fallbackOnCredentialErrors ?? true
-  }
-
-  /**
-   * Applies tool permissions and the tool guard, and tracks whether any tool actually ran.
-   * `deny` tools are dropped, `ask` tools need a human confirmation (fail-closed without one), so do tools with the
-   * SDK's own `needsApproval` in `blocking` mode, and every tool passes through `toolGuard.guard` when provided.
-   */
-  private prepareTools(options: GenerateTextOptions, state: AttemptState, approval?: ApprovalContext): ToolSet | undefined {
-    const tools = options.tools
-    if (!tools || Object.keys(tools).length === 0) return undefined
-
-    const prepared: Record<string, ToolDefinition> = {}
-    for (const [name, tool] of Object.entries(tools)) {
-      const permission = toolPermission(options.toolPermissions, name, tool)
-      if (permission === 'deny') {
-        if (isMcpTool(tool) && !hasOwnPermission(options.toolPermissions, name)) {
-          this.logger?.warn?.(`[AiManager] MCP tool "${name}" is not offered: give it a permission in toolPermissions (the same one the ToolRegistry gives).`)
-        }
-        continue
-      }
-
-      let candidate = this.trackExecution(tool as unknown as ToolDefinition, state)
-      if (approval) {
-        // `resumable`: an `ask` tool is not confirmed in memory; the run pauses at its approval request instead.
-        if (options.toolGuard?.guard) candidate = this.guardTool(name, candidate, 'allow', options.toolGuard)
-        if (approval.run) candidate = this.approvalExecution(candidate, approval.run)
-      } else if (hasNativeApproval(candidate)) {
-        candidate = this.nativeApprovalTool(name, candidate, permission, options.toolGuard)
-      } else if (permission === 'ask' || options.toolGuard?.guard) {
-        candidate = this.guardTool(name, candidate, permission, options.toolGuard)
-      }
-      prepared[name] = candidate
-    }
-
-    return Object.keys(prepared).length > 0 ? (prepared as unknown as ToolSet) : undefined
-  }
-
-  /**
-   * The caller's `prepareStep`, with a returned `model` dropped: fallback, the circuit breaker and cost are bound
-   * to the model of the attempt, so a step cannot switch it.
-   */
-  private prepareStepOf(prepareStep: PrepareStepFunction<ToolSet> | undefined): PrepareStepFunction<ToolSet> | undefined {
-    if (!prepareStep) return undefined
-    return async (context) => {
-      const result = await prepareStep(context)
-      if (!result || result.model === undefined) return result
-      this.logger?.warn?.(
-        '[AiManager] prepareStep returned a model; it is ignored. Fallback, the circuit breaker and cost stay bound to the attempt model.'
-      )
-      const { model: _ignored, ...rest } = result
-      return rest
-    }
-  }
-
-  /**
-   * Marks the attempt as having run tools, so the chain never falls back after a side effect. An ACP failure that a
-   * tool throws is recorded too: the SDK turns a tool's error into a tool result, so the run would go on without it.
-   */
-  private trackExecution(tool: ToolDefinition, state: AttemptState): ToolDefinition {
-    const original = tool.execute?.bind(tool)
-    if (!original) return tool
-    const record = (err: unknown) => {
-      if (err instanceof AcpCallFailedError) state.acpCallFailed ??= err
-    }
-    return {
-      ...tool,
-      execute: (args: unknown, execOptions?: unknown) => {
-        state.toolsExecuted = true
-        let result: unknown
-        try {
-          result = original(args, execOptions)
-        } catch (err) {
-          record(err)
-          throw err
-        }
-        // The SDK checks for an async generator on the value `execute` returns, so it is passed on as it is.
-        if (isAsyncIterable(result)) return recordedStream(result, record)
-        return Promise.resolve(result).catch((err: unknown) => {
-          record(err)
-          throw err
-        })
-      },
-    }
-  }
-
-  /**
-   * Records a resumed call's tool: "executing" before the tool runs, and its output after. The writes are awaited, so
-   * a stop between them leaves a state that `resume` reads as "outcome unknown", never as "not started".
-   */
-  private approvalExecution(tool: ToolDefinition, run: ApprovalRun): ToolDefinition {
-    const original = tool.execute?.bind(tool)
-    if (!original) return tool
-    return {
-      ...tool,
-      execute: async (args: unknown, execOptions?: unknown) => {
-        const toolCallId = (execOptions as { toolCallId?: string } | undefined)?.toolCallId
-        if (toolCallId === undefined) return resultOf(original(args, execOptions))
-        await run.begin(toolCallId)
-        try {
-          const output = await resultOf(original(args, execOptions))
-          await run.finish(toolCallId, outputOfResult(output))
-          return output
-        } catch (err) {
-          await run.finish(toolCallId, outputOfError(err))
-          throw err
-        }
-      },
-    }
-  }
-
-  /**
-   * A tool with the AI SDK's own `needsApproval`, in `blocking` mode. The SDK would stop at its approval request and
-   * nothing in this mode answers one, so the flag is removed and the call is confirmed like an `ask` tool. A
-   * `needsApproval` function still decides per call.
-   */
-  private nativeApprovalTool(
-    name: string,
-    tool: ToolDefinition,
-    permission: ToolPermission,
-    guardOptions: GenerateTextOptions['toolGuard']
-  ): ToolDefinition {
-    const { needsApproval, ...rest } = tool
-    const asked = this.guardTool(name, rest, 'ask', guardOptions)
-    if (typeof needsApproval !== 'function') return asked
-    const plain = permission === 'ask' || guardOptions?.guard ? this.guardTool(name, rest, permission, guardOptions) : rest
-    return {
-      ...asked,
-      execute: async (args: unknown, execOptions?: { toolCallId?: string; messages?: ModelMessage[]; context?: unknown }) => {
-        const needed = await needsApproval(args, {
-          toolCallId: execOptions?.toolCallId,
-          messages: execOptions?.messages ?? [],
-          context: execOptions?.context,
-        })
-        return (needed ? asked : plain).execute!(args, execOptions)
-      },
-    }
-  }
-
-  /** Wraps a tool with the guard and, for `ask`, the confirmation service. */
-  private guardTool(
-    name: string,
-    tool: ToolDefinition,
-    permission: ToolPermission,
-    guardOptions: GenerateTextOptions['toolGuard']
-  ): ToolDefinition {
-    return this.toolRegistry.wrapTool(name, tool, {
-      permission,
-      guard: guardOptions?.guard,
-      confirmation: guardOptions?.confirmation ?? this.confirmation,
-      sessionId: guardOptions?.sessionId,
-      timeoutMs: guardOptions?.timeoutMs,
-    })
   }
 
   private buildTextParams(
@@ -1270,60 +437,20 @@ export class AiManager {
     state: AttemptState,
     signal?: AbortSignal,
     approval?: ApprovalContext
-  ): TextCallParams & StreamCallParams {
-    const maxOutputTokens = options.maxOutputTokens ?? options.maxTokens
-    const sideEffects = attemptSideEffectHooks(
-      () => {
-        state.toolsExecuted = true
-      },
-      (step) => {
-        state.stepUsages.push(step.usage)
-      }
-    )
-    const { tools, toolOrder } = cacheTools(this.prepareTools(options, state, approval), options.promptCache?.tools)
-    const common = {
+  ) {
+    return buildCallTextParams(
+      options,
       model,
-      instructions: systemInstructions(options),
-      temperature: options.temperature,
-      topP: options.topP,
-      maxOutputTokens,
-      tools,
-      toolOrder,
-      activeTools: options.activeTools,
-      prepareStep: this.prepareStepOf(options.prepareStep),
-      providerOptions: options.providerOptions,
-      repairToolCall: options.repairToolCall,
-      telemetry: options.telemetry,
-      stopWhen: stopConditionsOf(options, state, [this.requestLimitStop()]),
-      maxRetries: options.maxRetries,
-      onToolExecutionStart: sideEffects.onToolExecutionStart,
-      onStepEnd: async (step: StepResult<ToolSet>) => {
-        sideEffects.onStepEnd(step)
-        state.onStep?.(step)
-        if (!options.onStepFinish) return
-        try {
-          await options.onStepFinish(step)
-        } catch (err) {
-          this.logger?.warn?.(`[AiManager] onStepFinish callback failed: ${String(err)}`)
-        }
+      state,
+      {
+        toolRegistry: this.toolRegistry,
+        confirmation: this.confirmation,
+        logger: this.logger,
+        requestLimitStop: this.requestLimitStop(),
       },
-      abortSignal: signal,
-      // Only `resumable` calls ask the SDK for approvals; in `blocking` mode the SDK sees no approval settings.
-      ...(approval
-        ? {
-            toolApproval: tools ? toolApprovalFor(callerToolsOf(options.tools, tools), options.toolPermissions) : undefined,
-            experimental_toolApprovalSecret: approval.secret.reveal(),
-          }
-        : {}),
-    }
-
-    if (options.messages && options.messages.length > 0) {
-      return { ...common, messages: options.messages } as TextCallParams & StreamCallParams
-    }
-    if (options.prompt) {
-      return { ...common, prompt: options.prompt } as TextCallParams & StreamCallParams
-    }
-    throw new AiException('Either "prompt" or non-empty "messages" is required.', 'E_AI_INVALID_ARGUMENT')
+      signal,
+      approval
+    )
   }
 
   private async recordCost(
@@ -1380,9 +507,7 @@ export class AiManager {
     }
   }
 
-  /**
-   * Generates text using the configured LLM provider with fallback, budget accounting, and tool guard.
-   */
+  /** Generates text using the configured LLM provider with fallback, budget accounting, and tool guard. */
   async generateText(options: GenerateTextOptions): Promise<GenerateTextResult> {
     return this.observedTextTurn(options)
   }
@@ -1429,7 +554,7 @@ export class AiManager {
     let turn: ConversationTurn | undefined
     let callOptions = options
     if (resume && options.conversation) {
-      await this.settleUnavailableApprovals(resume.run, options)
+      await settleUnavailableApprovals(resume.run, options)
       const input = [toolMessageOf(resume.run.approvals)]
       turn = await this.conversations.openTurn(options.conversation, input, resume.run)
       callOptions = withHistory(options, turn.history, input)
@@ -1448,7 +573,7 @@ export class AiManager {
       events,
       budgetHold
     ).catch(async (err: unknown) => {
-      if (resume && turn && err instanceof ApprovalSignatureError) await this.closeApprovalStep(turn, resume.run)
+      if (resume && turn && err instanceof ApprovalSignatureError) await closeApprovalStep(turn, resume.run)
       throw err
     })
     const { result, provider, model, usage, durationMs, costUsd } = outcome
@@ -1489,34 +614,6 @@ export class AiManager {
     }
   }
 
-  /** An approved call whose tool is no longer offered cannot run: its approval is denied, so the model sees why. */
-  private async settleUnavailableApprovals(run: ApprovalRun, options: GenerateTextOptions): Promise<void> {
-    const offered = Object.entries(options.tools ?? {})
-      .filter(([name, tool]) => toolPermission(options.toolPermissions, name, tool) !== 'deny')
-      .map(([name]) => name)
-    for (const approval of run.approvals) {
-      if (approval.status === 'decided' && approval.approved === true && !offered.includes(approval.toolName)) {
-        await run.deny(approval.approvalId, 'tool unavailable')
-      }
-    }
-  }
-
-  /**
-   * After an approval failed its signature check: every approval of the step is closed with a denial, and the closed
-   * step is stored, so the conversation is not left waiting. No tool ran.
-   */
-  private async closeApprovalStep(turn: ConversationTurn, run: ApprovalRun): Promise<void> {
-    await run.closeAll('invalid signature')
-    await turn.commit([], { input: [toolMessageOf(run.approvals)], state: null })
-  }
-
-  /** Maps the SDK's signature error to ApprovalSignatureError, so it is fatal and never falls back to another model. */
-  private approvalFailure(err: unknown): unknown {
-    if (!InvalidToolApprovalSignatureError.isInstance(err)) return err
-    this.logger?.warn?.('[AiManager] A tool approval has an invalid signature. The tool did not run; the step was closed with a denial.')
-    return new ApprovalSignatureError()
-  }
-
   /**
    * Streams text from LLM. Initial provider failures (429, 5xx, network) are detected before this
    * method returns, so they trigger fallback and the HTTP layer can still send proper headers.
@@ -1528,216 +625,29 @@ export class AiManager {
     let budgetHold: CallBudgetHold | undefined
     try {
       budgetHold = this.openBudget(options)
-      return await this.streamTextCall(options, events, budgetHold)
+      return await runStreamCall(
+        {
+          logger: this.logger,
+          circuitBreaker: this.circuitBreaker,
+          conversations: () => this.conversations,
+          agentNameOf: (opts) => this.agentNameOf(opts),
+          approvalContextOf: (opts) => this.approvalContextOf(opts),
+          approvalExpiry: () => this.approvalExpiry(),
+          executeWithFallback: (req, op) => this.executeWithFallback(req, op),
+          warmPricing: (p, m) => this.warmPricing(p, m),
+          recordCost: (agent, p, m, usage, ms, ready, meta) => this.recordCost(agent, p, m, usage, ms, ready, meta),
+          warnIfOverBudget: (agent, tokens, cost) => this.warnIfOverBudget(agent, tokens, cost),
+          buildTextParams: (opts, lm, state, signal, approval) => this.buildTextParams(opts, lm, state, signal, approval),
+        },
+        options,
+        events,
+        budgetHold
+      )
     } catch (err) {
       events.failed(err)
       // The stream never started, so nothing else will settle the hold.
       budgetHold?.close()
       throw err
-    }
-  }
-
-  /** `streamText` without the call's start and early-failure events. The stream reports how it ended. */
-  private async streamTextCall(
-    options: StreamTextOptions,
-    events: CallEvents,
-    budgetHold?: CallBudgetHold
-  ): Promise<StreamTextResult> {
-    validatePromptCache(options)
-    assertPromptIsString(options.prompt)
-    assertNoApprovalParts(options.messages)
-    const startTime = Date.now()
-    const agentName = this.agentNameOf(options)
-    const approval = this.approvalContextOf(options)
-    const input = inputMessages(options)
-    const turn = options.conversation ? await this.conversations.openTurn(options.conversation, input) : undefined
-    const callOptions = turn ? withHistory(options, turn.history, input) : options
-    let streamResponseMessages: ModelMessage[] = []
-    let streamOutcome: { status: 'completed' | 'awaiting-approval'; pendingApprovals: PendingApproval[] } = {
-      status: 'completed',
-      pendingApprovals: [],
-    }
-
-    const controller = new AbortController()
-    const signal = options.abortSignal
-      ? AbortSignal.any([options.abortSignal, controller.signal])
-      : controller.signal
-
-    let settleUsage: (usage: TokenUsage) => void = () => {}
-    const usagePromise = new Promise<TokenUsage>((resolve) => {
-      settleUsage = resolve
-    })
-
-    const { result: raw, provider, model } = await this.executeWithFallback(
-      { ...callOptions, abortSignal: signal, events, budgetHold },
-      async ({ getModel, modelName, providerName, breakerKey, state, acp }) => {
-        const pricingReady = this.warmPricing(providerName, modelName)
-        const languageModel = withJsonRecovery(await getModel(), callOptions, acp)
-
-        let attemptFailed = false
-        let accounted = false
-        let streamStarted = false
-
-        // `completedMessages` is set only when the stream ended normally: an aborted or failed stream stores nothing.
-        const finish = (
-          usage: TokenUsage,
-          text: string,
-          finishReason?: string,
-          extraMetadata: Record<string, unknown> = {},
-          completedMessages?: ModelMessage[],
-          commitState?: ReturnType<typeof asJson>,
-          /** Runs last, once the cost is known: reports how the call ended. */
-          settled?: (costUsd: number | undefined) => void
-        ): void => {
-          if (attemptFailed || accounted) return
-          accounted = true
-          void (async () => {
-            let costUsd: number | undefined
-            if (usage.totalTokens > 0) {
-              costUsd = await this.recordCost(
-                agentName,
-                providerName,
-                modelName,
-                usage,
-                Date.now() - startTime,
-                pricingReady,
-                { finishReason, ...options.metadata, ...extraMetadata }
-              )
-              this.warnIfOverBudget(agentName, usage.totalTokens, costUsd)
-              budgetHold?.add(usage.totalTokens, costUsd ?? 0)
-            }
-            budgetHold?.close()
-            if (turn && completedMessages) {
-              try {
-                await turn.commit(completedMessages, { state: commitState })
-              } catch (err) {
-                this.logger?.error?.(`[AiManager] Conversation "${turn.id}" was not stored: ${String(err)}`)
-              }
-            }
-            settleUsage(usage)
-            try {
-              options.onFinish?.({ text, usage, costUsd })
-            } catch (err) {
-              this.logger?.warn?.(`[AiManager] onFinish callback failed: ${String(err)}`)
-            }
-            settled?.(costUsd)
-          })()
-        }
-
-        const params = this.buildTextParams(callOptions, languageModel, state, signal, approval)
-        const stream = streamText({
-          ...params,
-          ...(callOptions.schema ? { output: Output.object({ schema: callOptions.schema }) } : {}),
-          onChunk: ({ chunk }) => {
-            if (chunk.type === 'text-delta') options.onChunk?.(chunk.text)
-          },
-          onError: ({ error }) => {
-            if (!streamStarted) return // surfaced through the first-part check below
-            this.logger?.warn?.(`[AiManager] Stream error on "${breakerKey}": ${String(error)}`)
-            const classification = classifyError(error, signal)
-            if (classification.countsAsFailure) {
-              this.circuitBreaker.recordFailure(breakerKey, error)
-            }
-            // The steps that finished before the error still consumed tokens.
-            finish(
-              sumUsage(state.stepUsages),
-              '',
-              undefined,
-              { failed: true, errorClass: classification.errorClass },
-              undefined,
-              undefined,
-              () => events.failed(error)
-            )
-          },
-          onEnd: (event) => {
-            streamResponseMessages = event.responseMessages
-            const pending = approval ? approvalsFromMessages(event.responseMessages, this.approvalExpiry()) : []
-            streamOutcome = {
-              status: pending.length > 0 ? 'awaiting-approval' : 'completed',
-              pendingApprovals: pending.length > 0 ? pendingViews(event.responseMessages, pending) : [],
-            }
-            const totalUsage = normalizeUsage(event.totalUsage)
-            finish(
-              totalUsage,
-              event.text,
-              event.finishReason,
-              {},
-              event.responseMessages,
-              pending.length > 0 ? asJson({ approvals: pending }) : undefined,
-              (costUsd) =>
-                events.completed({
-                  provider: providerName,
-                  model: modelName,
-                  usage: totalUsage,
-                  costUsd,
-                  finishReason: event.finishReason ?? 'stop',
-                  status: streamOutcome.status,
-                })
-            )
-          },
-          onAbort: (event) =>
-            finish(sumUsage(event.steps.map((s) => s.usage)), '', undefined, {}, undefined, undefined, () =>
-              events.failed(Object.assign(new Error('Generation aborted'), { name: 'AbortError' }))
-            ),
-        } as StreamCallParams)
-
-        // Wait for the first meaningful part so early provider errors reject this attempt.
-        const iterator = stream.fullStream[Symbol.asyncIterator]()
-        try {
-          for (;;) {
-            const { value, done } = await iterator.next()
-            if (done) break
-            if (value.type === 'error') throw value.error
-            if (value.type === 'abort') {
-              throw Object.assign(new Error('Generation aborted'), { name: 'AbortError' })
-            }
-            if (value.type === 'start' || value.type === 'start-step') continue
-            break
-          }
-        } catch (err) {
-          attemptFailed = true
-          throw this.approvalFailure(err)
-        } finally {
-          // Release only our peek branch; other consumers read their own tee of the stream.
-          await iterator.return?.()
-        }
-        streamStarted = true
-        return stream
-      }
-    )
-
-    // Without a schema the SDK's `output` rejects; expose `undefined` instead.
-    const output: Promise<unknown> = options.schema ? Promise.resolve(raw.output) : Promise.resolve(undefined)
-    output.catch(() => {}) // a never-read rejection must not surface as unhandled
-
-    return {
-      textStream: raw.textStream,
-      fullStream: raw.fullStream,
-      provider,
-      model,
-      usage: usagePromise,
-      output,
-      toTextStreamResponse: (headers) => raw.toTextStreamResponse({ headers }),
-      toUIMessageStreamResponse: (opts) => raw.toUIMessageStreamResponse(opts),
-      toDataStreamResponse: (headers) => raw.toUIMessageStreamResponse({ headers }),
-      consume: async () => {
-        const text = await raw.text
-        const usage = await usagePromise
-        return {
-          text,
-          usage,
-          finishReason: (await raw.finishReason) ?? 'stop',
-          responseMessages: streamResponseMessages,
-          status: streamOutcome.status,
-          pendingApprovals: streamOutcome.pendingApprovals,
-          expiredApprovalIds: [],
-          provider,
-          model,
-          durationMs: Date.now() - startTime,
-        }
-      },
-      abort: (reason?: unknown) => controller.abort(reason),
-      rawStream: raw,
     }
   }
 
@@ -1777,8 +687,9 @@ export class AiManager {
   ): Promise<GenerateObjectResult<T> & { finishReason: string }> {
     assertPromptIsString(options.prompt)
     assertNoApprovalParts(options.messages)
+    const agentName = this.agentNameOf(options)
     const { result, provider, model, usage, durationMs, costUsd } = await this.generateAndRecord(
-      this.agentNameOf(options),
+      agentName,
       options,
       Output.object({
         schema: options.schema,
@@ -1792,13 +703,13 @@ export class AiManager {
     )
 
     return {
-      finishReason: result.finishReason ?? 'stop',
       object: result.output as T,
       usage,
       costUsd,
       provider,
       model,
       durationMs,
+      finishReason: result.finishReason ?? 'stop',
     }
   }
 
@@ -1832,7 +743,7 @@ export class AiManager {
         try {
           return await generateText({ ...params, ...(output ? { output } : {}) } as TextCallParams)
         } catch (err) {
-          throw this.approvalFailure(err)
+          throw approvalFailure(err, this.logger)
         }
       }
     )
@@ -1854,131 +765,20 @@ export class AiManager {
     return { result, provider, model, usage, durationMs, costUsd }
   }
 
-  /**
-   * Fluent conversation builder (Laravel AI / Prism syntax style).
-   */
+  /** Fluent conversation builder (Laravel AI / Prism syntax style). */
   chat() {
-    const messages: ChatMessage[] = []
-    let systemPrompt: string | undefined
-    let providerOverride: string | undefined
-    let modelOverride: string | undefined
-    let temperatureVal: number | undefined
-    let agentNameVal: string | undefined
-    let toolsVal: ToolSet | undefined
-
-    const builder = {
-      system: (prompt: string) => {
-        systemPrompt = prompt
-        return builder
-      },
-      user: (content: string) => {
-        messages.push({ role: 'user', content })
-        return builder
-      },
-      assistant: (content: string) => {
-        messages.push({ role: 'assistant', content })
-        return builder
-      },
-      provider: (name: string) => {
-        providerOverride = name
-        return builder
-      },
-      model: (name: string) => {
-        modelOverride = name
-        return builder
-      },
-      temperature: (val: number) => {
-        temperatureVal = val
-        return builder
-      },
-      agent: (name: string) => {
-        agentNameVal = name
-        return builder
-      },
-      tools: (tools: ToolSet) => {
-        toolsVal = tools
-        return builder
-      },
-      generate: () =>
-        this.generateText({
-          system: systemPrompt,
-          messages: messages as ModelMessage[],
-          provider: providerOverride,
-          model: modelOverride,
-          temperature: temperatureVal,
-          agentName: agentNameVal,
-          tools: toolsVal,
-        }),
-      stream: () =>
-        this.streamText({
-          system: systemPrompt,
-          messages: messages as ModelMessage[],
-          provider: providerOverride,
-          model: modelOverride,
-          temperature: temperatureVal,
-          agentName: agentNameVal,
-          tools: toolsVal,
-        }),
-    }
-
-    return builder
+    return createChatBuilder({
+      generateText: (opts) => this.generateText(opts),
+      streamText: (opts) => this.streamText(opts),
+    })
   }
 
-  /**
-   * Driver factory for OpenAI, Anthropic, Google/Gemini, Groq, Ollama, ACP, and Custom providers.
-   */
+  /** Driver factory for OpenAI, Anthropic, Google/Gemini, Groq, Ollama, ACP, and Custom providers. */
   private async createDriver(name: string, config: ProviderConfig): Promise<AiDriver> {
-    switch (config.driver) {
-      case 'acp': {
-        const { createAcpDriver } = await import('./acp/provider.js')
-        return createAcpDriver(name, config as AcpProviderConfig, {
-          logger: this.logger,
-          confirmation: this.confirmation,
-        })
-      }
-
-      case 'custom': {
-        const customModel = await config.factory(config)
-        const defaultModel = config.defaultModel ?? 'custom'
-        return {
-          name,
-          defaultModel,
-          getModel: (m) =>
-            typeof customModel === 'function' ? customModel(m ?? defaultModel) : customModel,
-        }
-      }
-
-      default: {
-        const spec = Object.hasOwn(SDK_DRIVERS, config.driver) ? SDK_DRIVERS[config.driver] : undefined
-        if (!spec) {
-          throw new ProviderConfigError(name, `Unsupported driver type: "${config.driver}"`)
-        }
-        return this.sdkDriver(name, spec, config)
-      }
-    }
+    return buildDriver(name, config, { logger: this.logger, confirmation: this.confirmation })
   }
 
-  /** Loads a built-in SDK package, builds its client, and wraps it as a driver. */
-  private async sdkDriver(name: string, spec: SdkDriverSpec, config: ProviderConfig): Promise<AiDriver> {
-    const sdk = await this.safeImport<Record<string, ClientFactory>>(
-      spec.pkg,
-      `${spec.label} driver requires package "${spec.pkg}"`
-    )
-    const client = sdk[spec.factory](spec.settings(config))
-    const defaultModel = config.defaultModel ?? spec.defaultModel
-    return {
-      name,
-      defaultModel,
-      getModel: (m) => client(m ?? defaultModel),
-    }
-  }
-
-  private async safeImport<T>(pkgName: string, helpMsg: string): Promise<T> {
-    try {
-      return (await import(pkgName)) as T
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e)
-      throw new AiException(`${helpMsg}. Error: ${message}`, 'E_AI_MISSING_DEPENDENCY', e)
-    }
+  private approvalExecution(tool: ToolDefinition, run: ApprovalRun): ToolDefinition {
+    return runApprovalExecution(tool, run)
   }
 }
