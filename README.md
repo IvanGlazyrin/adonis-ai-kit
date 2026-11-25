@@ -87,7 +87,7 @@ Each line links to its page in the guide.
 
 - [Text and structured output](docs/guide/text-and-chat.md): `generateText`, `generateObject` with Zod, token usage and cost per call.
 - [Streaming](docs/guide/streaming.md): `streamText` and the `response.streamAI()` macro.
-- [Conversations](docs/guide/conversations.md): stored history with an owner check. The built-in store is in memory; a durable store is an adapter you write against the `ConversationStore` port.
+- [Conversations](docs/guide/conversations.md): stored history with an owner check, in memory or via the built-in Lucid store (`adonis-ai-kit/lucid`).
 - [Fallback and circuit breakers](docs/guide/resilience-and-fallbacks.md): provider cascade, per-key circuit breakers, no fallback after a side effect.
 - [Model chains and credentials](docs/guide/configuration.md#dynamic-multi-tenant-credentials): per-user or per-tenant keys through `models`.
 - [Tools and guardrails](docs/guide/tools-guardrails.md): `ToolRegistry` (deny by default), `PolicyGuard`, `allow` / `ask` / `deny`.
@@ -97,7 +97,7 @@ Each line links to its page in the guide.
 - [Agents and skills](docs/guide/agents.md): Markdown manifests, on-demand skills, sub-agents.
 - [Step control and prompt cache](docs/guide/step-control-and-cache.md): `prepareStep`, `stopWhen`, Anthropic cache breakpoints, JSON recovery.
 - [Events and observability](docs/guide/observability.md): call lifecycle events, `ai:*` emitter events, AI SDK telemetry.
-- [Token budget and cost](docs/guide/budget-and-cost.md): `CostTracker`, cost sink, `BudgetEnforcer`, `stopOnBudget`.
+- [Token budget and cost](docs/guide/budget-and-cost.md): `CostTracker`, cost sink, `BudgetEnforcer`, per-call `budget` and `stopOnBudget`.
 - [Model catalog](docs/guide/catalog.md): live pricing and limits from models.dev.
 - [Testing](docs/guide/testing.md): `adonis-ai-kit/testing` fakes for models, tools and failures.
 - [Ace commands](docs/guide/cli.md): `ai:test` and `make:ai-agent`.

@@ -23,7 +23,7 @@ export default defineConfig({
       { text: 'Full Reference (1-to-1 Laravel style)', link: '/ai-sdk' },
       { text: 'Changelog', link: 'https://github.com/IvanGlazyrin/adonis-ai-kit/blob/main/CHANGELOG.md' },
       {
-        text: 'v1.4.0',
+        text: 'v1.5.0',
         items: [
           { text: 'npm package', link: 'https://www.npmjs.com/package/adonis-ai-kit' },
           { text: 'GitHub repository', link: 'https://github.com/IvanGlazyrin/adonis-ai-kit' },
