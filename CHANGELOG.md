@@ -14,6 +14,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `telemetry` option on `generateText`, `streamText` and `generateObject`: passed to the AI SDK as is.
 - Per-call budget enforcement via `budget: { enforcer, agentName?, projectedTokens?, projectedCostUsd? }` on `generateText`, `streamText` and `generateObject`: reserves capacity before the first model call (throwing `BudgetExceededError` when exhausted), stops tool loops once the agent or session budget runs out, and settles actual usage (or releases on zero-token failure) when the call or stream finishes. `loopSpend(steps, costTracker)` is exported from `adonis-ai-kit/budget`.
 - `budget.enforce` option in `AiConfig` (default `false`): stops tool loops after the step that crosses `maxTokensPerRequest` or `maxCostPerRequestUsd`.
+- `adonis-ai-kit/lucid`: `LucidConversationStore` (optional `@adonisjs/lucid` `^22.0.0` peer dependency), a durable `ConversationStore` for PostgreSQL and SQLite with transactional `expectedVersion` compare-and-set and cursor pagination. `node ace configure adonis-ai-kit` now offers to publish the `ai_conversations` / `ai_conversation_messages` migration.
 
 ### Deprecated
 

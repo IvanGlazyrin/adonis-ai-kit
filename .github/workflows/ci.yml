@@ -39,3 +39,41 @@ jobs:
 
     - name: Run regression tests
       run: npm run test:regression
+
+  lucid-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Use Node.js 24.x
+      uses: actions/setup-node@v4
+      with:
+        node-version: 24.x
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Run Lucid store tests against PostgreSQL
+      env:
+        LUCID_TEST_CLIENT: pg
+        PG_HOST: 127.0.0.1
+        PG_PORT: 5432
+        PG_USER: postgres
+        PG_PASSWORD: postgres
+        PG_DATABASE: postgres
+      run: npm test -- --files="tests/unit/lucid/conversation_store.spec.ts"

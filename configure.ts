@@ -24,4 +24,12 @@ export async function configure(command: Configure): Promise<void> {
   })
 
   await codemods.makeUsingStub(stubsRoot, 'config/ai.stub', {})
+
+  const publishMigration = await command.prompt.confirm(
+    'Publish the conversations migration? (needs @adonisjs/lucid)',
+    { default: false }
+  )
+  if (publishMigration) {
+    await codemods.makeUsingStub(stubsRoot, 'migrations/create_ai_conversations_tables.stub', {})
+  }
 }

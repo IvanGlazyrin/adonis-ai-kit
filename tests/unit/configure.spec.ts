@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -39,7 +39,7 @@ function makeFixtureApp() {
 }
 
 /** Runs `node ace configure adonis-ai-kit` against the fixture app. */
-async function runConfigure(root: string) {
+async function runConfigure(root: string, publishMigration = false) {
   const ignitor = new IgnitorFactory()
     .withCoreProviders()
     .withCoreConfig()
@@ -53,6 +53,9 @@ async function runConfigure(root: string) {
   await ace.app.init()
   ace.ui.switchMode('raw')
   const command = await ace.create(Configure, ['adonis-ai-kit'])
+  const trapped = command.prompt.trap('Publish the conversations migration? (needs @adonisjs/lucid)')
+  if (publishMigration) trapped.accept()
+  else trapped.reject()
   await command.exec()
   return command
 }
@@ -102,6 +105,21 @@ test.group('configure', (group) => {
     const rc = readFileSync(join(root, 'adonisrc.ts'), 'utf-8')
     assert.lengthOf(rc.match(/adonis-ai-kit\/providers\/ai_provider/g) ?? [], 1)
     assert.lengthOf(rc.match(/adonis-ai-kit\/commands/g) ?? [], 1)
+  })
+
+  test('configure creates the conversations migration only when confirmed', async ({ assert }) => {
+    await runConfigure(root, false)
+    const migrationsDir = join(root, 'database/migrations')
+    assert.isFalse(existsSync(migrationsDir))
+
+    await runConfigure(root, true)
+    assert.isTrue(existsSync(migrationsDir))
+    const files = readdirSync(migrationsDir)
+    assert.lengthOf(files, 1)
+    assert.match(files[0], /_create_ai_conversations_tables\.ts$/)
+    const migration = readFileSync(join(migrationsDir, files[0]), 'utf-8')
+    assert.include(migration, 'ai_conversations')
+    assert.include(migration, 'ai_conversation_messages')
   })
 })
 

@@ -1,0 +1,39 @@
+{{{
+  exports({ to: app.migrationsPath(`${Date.now()}_create_ai_conversations_tables.ts`) })
+}}}
+import { BaseSchema } from '@adonisjs/lucid/schema'
+
+export default class extends BaseSchema {
+  async up() {
+    this.schema.createTable('ai_conversations', (table) => {
+      table.string('id', 36).primary()
+      table.string('owner').notNullable()
+      table.string('agent_name').nullable()
+      table.integer('version').notNullable().defaultTo(0)
+      table.text('state').nullable()
+      table.text('metadata').nullable()
+      table.timestamp('created_at').notNullable()
+      table.timestamp('updated_at').notNullable()
+      table.index(['owner', 'updated_at'])
+    })
+
+    this.schema.createTable('ai_conversation_messages', (table) => {
+      table.increments('id').primary()
+      table
+        .string('conversation_id', 36)
+        .notNullable()
+        .references('id')
+        .inTable('ai_conversations')
+        .onDelete('CASCADE')
+      table.integer('seq').notNullable()
+      table.text('message').notNullable()
+      table.timestamp('created_at').notNullable()
+      table.unique(['conversation_id', 'seq'])
+    })
+  }
+
+  async down() {
+    this.schema.dropTable('ai_conversation_messages')
+    this.schema.dropTable('ai_conversations')
+  }
+}

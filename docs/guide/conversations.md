@@ -89,45 +89,54 @@ The stored history stays complete.
 
 ## Durable Store (Lucid Adapter)
 
-The default store is in memory (`store.durable === false`): a restart drops every conversation, and in production a warning is logged. The kit has no database dependency: write an adapter that implements `ConversationStore` (`create`, `load`, `append`, `list`, `delete`, and `durable: true`) and register it:
+The default store is in memory (`store.durable === false`): a restart drops every conversation, and in production a warning is logged. When your app uses `@adonisjs/lucid`, import `LucidConversationStore` from `adonis-ai-kit/lucid`:
 
 ```ts
 // config/ai.ts
-import { LucidConversationStore } from '#services/lucid_conversation_store' // your adapter
+import db from '@adonisjs/lucid/services/db'
+import { defineConfig } from 'adonis-ai-kit'
+import { LucidConversationStore } from 'adonis-ai-kit/lucid'
 
 export default defineConfig({
   // ...providers
-  conversations: { store: new LucidConversationStore() },
+  conversations: { store: new LucidConversationStore(db) },
 })
 ```
 
-`append` must check `owner` and `expectedVersion` in one transaction and throw `ConversationNotFoundError` or `ConversationConflictError`. Persistence of files is outside the kit. Verify the adapter with `conversationStoreContract` (see [Testing](/guide/testing)).
+To publish the migration (`ai_conversations` and `ai_conversation_messages`), answer **Yes** when running `node ace configure adonis-ai-kit`. You can also pass `{ connection, conversationsTable, messagesTable }` to `new LucidConversationStore(db, options)`.
 
-A table layout that fits the store port:
+Custom adapters can implement `ConversationStore` (`create`, `load`, `append`, `list`, `delete`, and `durable: true`): `append` must check `owner` and `expectedVersion` in one transaction and throw `ConversationNotFoundError` or `ConversationConflictError`. Verify custom adapters with `conversationStoreContract` (see [Testing](/guide/testing)).
+
+Table layout used by `LucidConversationStore`:
 
 ```ts
-// database/migrations/1700000000000_create_ai_conversations.ts
+// database/migrations/<timestamp>_create_ai_conversations_tables.ts
 import { BaseSchema } from '@adonisjs/lucid/schema'
 
 export default class extends BaseSchema {
   async up() {
     this.schema.createTable('ai_conversations', (table) => {
-      table.string('id').primary()
+      table.string('id', 36).primary()
       table.string('owner').notNullable()
       table.string('agent_name').nullable()
       table.integer('version').notNullable().defaultTo(0)
-      table.jsonb('state').nullable()
-      table.jsonb('metadata').nullable()
+      table.text('state').nullable()
+      table.text('metadata').nullable()
       table.timestamp('created_at').notNullable()
       table.timestamp('updated_at').notNullable()
       table.index(['owner', 'updated_at'])
     })
 
     this.schema.createTable('ai_conversation_messages', (table) => {
-      table.increments('id')
-      table.string('conversation_id').references('id').inTable('ai_conversations').onDelete('CASCADE')
+      table.increments('id').primary()
+      table
+        .string('conversation_id', 36)
+        .notNullable()
+        .references('id')
+        .inTable('ai_conversations')
+        .onDelete('CASCADE')
       table.integer('seq').notNullable()
-      table.jsonb('message').notNullable()
+      table.text('message').notNullable()
       table.timestamp('created_at').notNullable()
       table.unique(['conversation_id', 'seq'])
     })
